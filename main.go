@@ -90,6 +90,11 @@ func (ks *KeyStore) load() error {
 }
 
 func (ks *KeyStore) saveLocked() error {
+	dir := filepath.Dir(ks.filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
 	data, err := json.MarshalIndent(ks.keys, "", "  ")
 	if err != nil {
 		return err
@@ -371,6 +376,12 @@ func setupRoutes(ks *KeyStore) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"valid": true, "key": key})
 	})
+
+	// OpenCode Free API Routes (Issue #4781 bypass)
+	mux.HandleFunc("GET /v1/models", handleOpenCodeModels)
+	mux.HandleFunc("GET /api/opencode/models", handleOpenCodeModels)
+	mux.HandleFunc("POST /v1/chat/completions", handleOpenCodeChatCompletions(ks, ""))
+	mux.HandleFunc("POST /api/chat/completions", handleOpenCodeChatCompletions(ks, ""))
 
 	// Wrap in CORS middleware
 	return corsMiddleware(mux)

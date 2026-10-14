@@ -24,6 +24,9 @@
 	import ServerIcon from '@lucide/svelte/icons/server';
 	import CheckCircle2Icon from '@lucide/svelte/icons/check-circle-2';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import PlayIcon from '@lucide/svelte/icons/play';
+	import BotIcon from '@lucide/svelte/icons/bot';
+	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 
 	interface APIKey {
 		id: string;
@@ -58,6 +61,28 @@
 	let copiedId = $state<string | null>(null);
 	let searchQuery = $state('');
 
+	// OpenCode Playground State
+	let testModel = $state('big-pickle');
+	let testPrompt = $state('Write a haiku about routing AI models.');
+	let testStream = $state(true);
+	let testSelectedKeyId = $state('');
+	let testLoading = $state(false);
+	let testResponse = $state('');
+	let testError = $state<string | null>(null);
+	let testLatencyMs = $state<number | null>(null);
+
+	const availableModels = [
+		'big-pickle',
+		'ling-3.1-flash-free',
+		'cat-jam-free',
+		'mimo-v2.6-flash-free',
+		'nemotron-3.5-lightning-free',
+		'longcat-2.5-preview-free',
+		'space-bunny-free',
+		'muse-spark-1.2-contributor-free',
+		'muse-spark-1.3-contributor-free'
+	];
+
 	const filteredKeys = $derived(
 		keys.filter(
 			(k) =>
@@ -79,6 +104,10 @@
 			}
 			const data = await res.json();
 			keys = data.keys || [];
+			if (keys.length > 0 && !testSelectedKeyId) {
+				const firstActive = keys.find((k) => k.isActive);
+				if (firstActive) testSelectedKeyId = firstActive.id;
+			}
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Go backend unreachable on :8080';
 		} finally {
@@ -126,6 +155,9 @@
 			customKey = '';
 			createMode = 'auto';
 			await fetchKeys();
+			if (!testSelectedKeyId) {
+				testSelectedKeyId = newKey.id;
+			}
 		} catch (e: unknown) {
 			modalError = e instanceof Error ? e.message : 'Error creating key';
 		} finally {
@@ -156,6 +188,9 @@
 			const res = await fetch(`/api/keys/${id}`, { method: 'DELETE' });
 			if (res.ok) {
 				keys = keys.filter((k) => k.id !== id);
+				if (testSelectedKeyId === id) {
+					testSelectedKeyId = keys.find((k) => k.isActive)?.id || '';
+				}
 			}
 		} catch (e: unknown) {
 			console.error('Failed to delete key', e);
@@ -209,6 +244,81 @@
 		}
 	}
 
+	async function runTestCompletion() {
+		const targetKeyObj =
+			keys.find((k) => k.id === testSelectedKeyId) || keys.find((k) => k.isActive);
+		if (!targetKeyObj) {
+			testError = 'Please create and activate an API key first.';
+			return;
+		}
+		if (!testPrompt.trim()) {
+			testError = 'Please enter a test prompt.';
+			return;
+		}
+
+		try {
+			testLoading = true;
+			testError = null;
+			testResponse = '';
+			const startTime = performance.now();
+
+			const res = await fetch('/v1/chat/completions', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${targetKeyObj.key}`
+				},
+				body: JSON.stringify({
+					model: testModel,
+					messages: [{ role: 'user', content: testPrompt.trim() }],
+					stream: testStream
+				})
+			});
+
+			if (!res.ok) {
+				const errBody = await res.json().catch(() => ({}));
+				throw new Error(errBody.error?.message || `Upstream returned status ${res.status}`);
+			}
+
+			if (testStream) {
+				const reader = res.body?.getReader();
+				const decoder = new TextDecoder();
+				if (!reader) throw new Error('No readable response body');
+
+				let buffer = '';
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					buffer += decoder.decode(value, { stream: true });
+					const lines = buffer.split('\n');
+					buffer = lines.pop() || '';
+
+					for (const line of lines) {
+						const trimmed = line.trim();
+						if (!trimmed || !trimmed.startsWith('data: ')) continue;
+						const dataStr = trimmed.slice(6);
+						if (dataStr === '[DONE]') break;
+						try {
+							const parsed = JSON.parse(dataStr);
+							const delta = parsed.choices?.[0]?.delta?.content || '';
+							testResponse += delta;
+						} catch {
+							// skip non-json keepalives
+						}
+					}
+				}
+			} else {
+				const data = await res.json();
+				testResponse = data.choices?.[0]?.message?.content || '';
+			}
+			testLatencyMs = Math.round(performance.now() - startTime);
+		} catch (e: unknown) {
+			testError = e instanceof Error ? e.message : 'Completion test failed';
+		} finally {
+			testLoading = false;
+		}
+	}
+
 	onMount(() => {
 		isDark =
 			document.documentElement.classList.contains('dark') ||
@@ -234,8 +344,11 @@
 					<div class="flex items-center gap-2">
 						<span class="text-base font-semibold tracking-tight">Lun Router</span>
 						<Badge variant="secondary" class="text-[10px] font-medium">9router Go</Badge>
+						<Badge variant="outline" class="border-emerald-500/30 text-[10px] text-emerald-500">
+							OpenCode Free #4781
+						</Badge>
 					</div>
-					<span class="text-xs text-muted-foreground">API Key & Endpoint Management</span>
+					<span class="text-xs text-muted-foreground">API Key & OpenCode Free Completions</span>
 				</div>
 			</div>
 
@@ -334,27 +447,174 @@
 				</Card.Header>
 				<Card.Content>
 					<div class="text-2xl font-bold text-emerald-500">{activeCount}</div>
-					<p class="mt-1 text-xs text-muted-foreground">Accepting incoming traffic</p>
+					<p class="mt-1 text-xs text-muted-foreground">Ready for completions</p>
 				</Card.Content>
 			</Card.Root>
 
 			<Card.Root>
 				<Card.Header class="flex flex-row items-center justify-between pb-2">
 					<Card.Title class="text-xs font-medium text-muted-foreground"
-						>Router Machine ID</Card.Title
+						>OpenCode Free Bypass</Card.Title
 					>
 					<div
-						class="flex size-8 items-center justify-center rounded-md bg-muted text-muted-foreground"
+						class="flex size-8 items-center justify-center rounded-md bg-primary/10 text-primary"
 					>
-						<ServerIcon class="size-4" />
+						<ShieldCheckIcon class="size-4" />
 					</div>
 				</Card.Header>
 				<Card.Content>
-					<div class="truncate font-mono text-sm" title={primaryMachineId}>{primaryMachineId}</div>
-					<p class="mt-1 text-xs text-muted-foreground">Persistent hardware fingerprint</p>
+					<div class="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+						<span>Issue #4781 Fix Active</span>
+					</div>
+					<p class="mt-1 text-xs text-muted-foreground">5 custom headers + fingerprint quartet</p>
 				</Card.Content>
 			</Card.Root>
 		</div>
+
+		<!-- OpenCode Free Completions Tester Card -->
+		<Card.Root class="border-primary/20 bg-card">
+			<Card.Header
+				class="flex flex-col justify-between gap-2 border-b border-border pb-3 sm:flex-row sm:items-center"
+			>
+				<div class="flex flex-col gap-1">
+					<div class="flex items-center gap-2">
+						<BotIcon class="size-4 text-primary" />
+						<Card.Title class="text-base font-semibold">OpenCode Free Completions Tester</Card.Title
+						>
+						<Badge variant="secondary" class="font-mono text-[10px]">/v1/chat/completions</Badge>
+					</div>
+					<Card.Description class="text-xs">
+						Test completions against upstream OpenCode Free with automatic session headers and
+						fingerprinting.
+					</Card.Description>
+				</div>
+				{#if testLatencyMs !== null}
+					<Badge variant="outline" class="w-fit font-mono text-xs">
+						{testLatencyMs}ms
+					</Badge>
+				{/if}
+			</Card.Header>
+
+			<Card.Content class="flex flex-col gap-4 p-4 sm:p-5">
+				<div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+					<!-- Model Selection -->
+					<div class="flex flex-col gap-1.5">
+						<label for="test-model" class="text-xs font-medium text-muted-foreground">Model</label>
+						<select
+							id="test-model"
+							bind:value={testModel}
+							class="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+						>
+							{#each availableModels as m (m)}
+								<option value={m}>{m}</option>
+							{/each}
+						</select>
+					</div>
+
+					<!-- Key Selection -->
+					<div class="flex flex-col gap-1.5">
+						<label for="test-key" class="text-xs font-medium text-muted-foreground"
+							>Authorized API Key</label
+						>
+						<select
+							id="test-key"
+							bind:value={testSelectedKeyId}
+							class="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+						>
+							{#if keys.length === 0}
+								<option value="">No keys created yet</option>
+							{:else}
+								{#each keys as k (k.id)}
+									<option value={k.id}
+										>{k.name} ({maskKey(k.key)}) {k.isActive ? '' : '[disabled]'}</option
+									>
+								{/each}
+							{/if}
+						</select>
+					</div>
+
+					<!-- Streaming Toggle -->
+					<div class="flex flex-col justify-end gap-1.5">
+						<div
+							class="flex h-9 items-center justify-between rounded-md border border-input bg-background px-3"
+						>
+							<span class="text-xs font-medium text-muted-foreground">Stream SSE chunks</span>
+							<Switch bind:checked={testStream} size="sm" aria-label="Toggle streaming" />
+						</div>
+					</div>
+				</div>
+
+				<!-- Prompt Input & Run Button -->
+				<div class="flex flex-col gap-1.5">
+					<label for="test-prompt" class="text-xs font-medium text-muted-foreground">Prompt</label>
+					<div class="flex flex-col gap-2 sm:flex-row">
+						<Input
+							id="test-prompt"
+							bind:value={testPrompt}
+							placeholder="Ask anything..."
+							class="flex-1 text-xs"
+							disabled={testLoading}
+							onkeydown={(e) => {
+								if (e.key === 'Enter') runTestCompletion();
+							}}
+						/>
+						<Button
+							variant="default"
+							size="sm"
+							class="shrink-0"
+							disabled={testLoading || keys.length === 0}
+							onclick={runTestCompletion}
+						>
+							{#if testLoading}
+								<RefreshCwIcon data-icon="inline-start" class="animate-spin" />
+								Generating...
+							{:else}
+								<PlayIcon data-icon="inline-start" />
+								Send Prompt
+							{/if}
+						</Button>
+					</div>
+				</div>
+
+				{#if testError}
+					<Alert.Root variant="destructive" class="px-3 py-2.5 text-xs">
+						<AlertCircleIcon class="size-4" />
+						<Alert.Title class="text-xs">Completion Error</Alert.Title>
+						<Alert.Description class="text-xs">{testError}</Alert.Description>
+					</Alert.Root>
+				{/if}
+
+				{#if testResponse || testLoading}
+					<div class="mt-1 flex flex-col gap-1.5">
+						<div class="flex items-center justify-between">
+							<span class="text-xs font-medium text-muted-foreground">OpenCode Response:</span>
+							{#if testResponse}
+								<Button
+									variant="ghost"
+									size="icon-sm"
+									class="size-6 text-muted-foreground hover:text-foreground"
+									onclick={() => copyToClipboard(testResponse, 'test_output')}
+									title="Copy Response"
+								>
+									{#if copiedId === 'test_output'}
+										<CheckIcon class="size-3 text-emerald-500" />
+									{:else}
+										<CopyIcon class="size-3" />
+									{/if}
+								</Button>
+							{/if}
+						</div>
+						<div
+							class="min-h-[72px] rounded-lg border border-border bg-muted/60 p-3.5 font-mono text-xs leading-relaxed whitespace-pre-wrap"
+						>
+							{testResponse}{#if testLoading}<span
+									class="ms-1 inline-block size-1.5 animate-ping rounded-full bg-primary"
+								></span>{/if}
+						</div>
+					</div>
+				{/if}
+			</Card.Content>
+		</Card.Root>
 
 		<!-- Main Card with API Keys Table -->
 		<Card.Root class="flex flex-col gap-0 overflow-hidden p-0">
@@ -367,8 +627,8 @@
 						<Badge variant="outline" class="font-mono text-xs">{filteredKeys.length}</Badge>
 					</div>
 					<Card.Description class="text-xs">
-						Keys authorize requests to upstream AI models. Supports auto-generated CRC keys or
-						custom keys.
+						Manage router keys. Keys authenticate endpoints like <code>/v1/chat/completions</code> and
+						proxy to OpenCode Free.
 					</Card.Description>
 				</div>
 
@@ -569,15 +829,15 @@
 				class="flex flex-col justify-between gap-3 p-4 text-xs sm:flex-row sm:items-center"
 			>
 				<div class="flex flex-col gap-0.5">
-					<span class="font-medium text-foreground">API Authentication Header</span>
+					<span class="font-medium text-foreground">OpenAI-Compatible Endpoint</span>
 					<span class="text-muted-foreground"
-						>Send your API key in the standard HTTP Authorization header:</span
+						>Compatible with Cursor, Claude Code, Cline, and any OpenAI SDK:</span
 					>
 				</div>
 				<code
 					class="rounded border border-border bg-background px-2.5 py-1 font-mono text-[11px] text-foreground select-all"
 				>
-					Authorization: Bearer sk-...
+					POST /v1/chat/completions (Bearer &lt;key&gt;)
 				</code>
 			</Card.Content>
 		</Card.Root>
