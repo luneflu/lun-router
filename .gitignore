@@ -6,7 +6,8 @@ node_modules
 .netlify
 .wrangler
 /.svelte-kit
-/build
+/build/*
+!/build/.gitkeep
 
 # OS
 .DS_Store
@@ -24,6 +25,7 @@ vite.config.ts.timestamp-*
 
 # Go
 lun-server
+lun-router
 data/
 
 9router

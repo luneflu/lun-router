@@ -1,13 +1,16 @@
 package handler
 
 import (
+	"io"
+	"io/fs"
 	"net/http"
+	"strings"
 
 	"lun-router/internal/opencode"
 	"lun-router/internal/store"
 )
 
-func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client) http.Handler {
+func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, staticFS ...fs.FS) http.Handler {
 	mux := http.NewServeMux()
 
 	keyH := NewKeyHandler(ks)
@@ -34,7 +37,71 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	mux.HandleFunc("POST /api/providers/opencode/version/refresh", compH.RefreshVersion)
 	mux.HandleFunc("POST /api/models/test", compH.TestModel)
 
+	if len(staticFS) > 0 && staticFS[0] != nil {
+		mux.Handle("/", spaHandler(staticFS[0]))
+	}
+
 	return corsMiddleware(mux)
+}
+
+func spaHandler(distFS fs.FS) http.Handler {
+	fileServer := http.FileServerFS(distFS)
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/v1/") {
+			http.NotFound(w, r)
+			return
+		}
+
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		cleanPath := strings.TrimPrefix(r.URL.Path, "/")
+		if cleanPath == "" {
+			serveIndex(w, r, distFS)
+			return
+		}
+
+		f, err := distFS.Open(cleanPath)
+		if err != nil {
+			serveIndex(w, r, distFS)
+			return
+		}
+		defer f.Close()
+
+		stat, err := f.Stat()
+		if err != nil || stat.IsDir() {
+			serveIndex(w, r, distFS)
+			return
+		}
+
+		fileServer.ServeHTTP(w, r)
+	})
+}
+
+func serveIndex(w http.ResponseWriter, r *http.Request, distFS fs.FS) {
+	indexFile, err := distFS.Open("index.html")
+	if err != nil {
+		http.Error(w, "Frontend not built. Please run pnpm build or pnpm compile.", http.StatusNotFound)
+		return
+	}
+	defer indexFile.Close()
+
+	stat, err := indexFile.Stat()
+	if err != nil {
+		http.Error(w, "Failed to stat index.html", http.StatusInternalServerError)
+		return
+	}
+
+	if rs, ok := indexFile.(io.ReadSeeker); ok {
+		http.ServeContent(w, r, "index.html", stat.ModTime(), rs)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.Copy(w, indexFile)
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

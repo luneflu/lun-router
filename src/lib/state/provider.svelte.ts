@@ -85,3 +85,5 @@ export class ProviderState {
 		}
 	}
 }
+
+export const providerState = new ProviderState();

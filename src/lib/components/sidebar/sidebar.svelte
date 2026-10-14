@@ -4,13 +4,12 @@
 	import LayoutDashboardIcon from '@lucide/svelte/icons/layout-dashboard';
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
-	import CheckCircle2Icon from '@lucide/svelte/icons/check-circle-2';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
 
 	interface Props {
 		activeView: 'home' | 'opencode';
-		onSelectView: (view: 'home' | 'opencode') => void;
+		onSelectView?: (view: 'home' | 'opencode') => void;
 		totalKeys: number;
 		enabledModels: number;
 		totalModels: number;
@@ -28,8 +27,8 @@
 		onCloseMobile
 	}: Props = $props();
 
-	function select(view: 'home' | 'opencode') {
-		onSelectView(view);
+	function handleNavigate(view: 'home' | 'opencode') {
+		onSelectView?.(view);
 		onCloseMobile();
 	}
 </script>
@@ -85,15 +84,15 @@
 				General
 			</span>
 
-			<button
-				type="button"
+			<a
+				href="/"
 				class={cn(
 					'flex items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition-colors',
 					activeView === 'home'
 						? 'bg-primary/10 font-semibold text-primary'
 						: 'text-muted-foreground hover:bg-muted hover:text-foreground'
 				)}
-				onclick={() => select('home')}
+				onclick={() => handleNavigate('home')}
 			>
 				<div class="flex items-center gap-2.5">
 					<LayoutDashboardIcon class="size-4" />
@@ -102,7 +101,7 @@
 				<Badge variant="outline" class="font-mono text-[10px]">
 					{totalKeys}
 				</Badge>
-			</button>
+			</a>
 		</div>
 
 		<!-- Providers Section -->
@@ -114,15 +113,15 @@
 				<span class="font-mono text-[10px] text-muted-foreground">1 active</span>
 			</div>
 
-			<button
-				type="button"
+			<a
+				href="/opencode"
 				class={cn(
 					'flex items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition-colors',
 					activeView === 'opencode'
 						? 'bg-primary/10 font-semibold text-primary'
 						: 'text-muted-foreground hover:bg-muted hover:text-foreground'
 				)}
-				onclick={() => select('opencode')}
+				onclick={() => handleNavigate('opencode')}
 			>
 				<div class="flex items-center gap-2.5">
 					<div class="relative flex items-center justify-center">
@@ -144,7 +143,7 @@
 						</span>
 					{/if}
 				</div>
-			</button>
+			</a>
 		</div>
 	</div>
 </aside>

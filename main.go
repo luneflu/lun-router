@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"embed"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -11,6 +13,9 @@ import (
 	"lun-router/internal/opencode"
 	"lun-router/internal/store"
 )
+
+//go:embed all:build
+var buildFS embed.FS
 
 func main() {
 	port := os.Getenv("PORT")
@@ -37,7 +42,13 @@ func main() {
 	vm.StartBackgroundSync(context.Background())
 
 	client := opencode.NewClient("", vm)
-	router := handler.NewRouter(ks, ms, client)
+
+	distFS, err := fs.Sub(buildFS, "build")
+	if err != nil {
+		log.Fatalf("Failed to load embedded frontend: %v", err)
+	}
+
+	router := handler.NewRouter(ks, ms, client, distFS)
 
 	log.Printf("Lun Router Go backend running on :%s (opencode version: %s, data dir: %s)", port, vm.GetVersion(), dataDir)
 	if err := http.ListenAndServe(":"+port, router); err != nil {

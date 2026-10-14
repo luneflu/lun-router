@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"lun-router/internal/handler"
@@ -797,5 +798,84 @@ func TestOpenCodeVersionManager(t *testing.T) {
 
 	if provData.Version != "2.0.29" {
 		t.Errorf("expected provider models version 2.0.29, got %s", provData.Version)
+	}
+}
+
+func TestSPAStaticServing(t *testing.T) {
+	mockFS := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte("<!DOCTYPE html><html><body><h1>Lun Router</h1></body></html>"),
+		},
+		"robots.txt": &fstest.MapFile{
+			Data: []byte("User-agent: *\nDisallow:"),
+		},
+	}
+
+	router := handler.NewRouter(nil, nil, nil, mockFS)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := server.Client()
+
+	// 1. Root /
+	resp, err := client.Get(server.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK for /, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "Lun Router") {
+		t.Errorf("expected HTML body, got %s", string(body))
+	}
+
+	// 2. Static asset /robots.txt
+	resp, err = client.Get(server.URL + "/robots.txt")
+	if err != nil {
+		t.Fatalf("GET /robots.txt: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK for /robots.txt, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "User-agent") {
+		t.Errorf("expected robots.txt body, got %s", string(body))
+	}
+
+	// 3. SPA Route fallback /opencode -> index.html
+	resp, err = client.Get(server.URL + "/opencode")
+	if err != nil {
+		t.Fatalf("GET /opencode: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK for /opencode fallback, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "Lun Router") {
+		t.Errorf("expected fallback to index.html, got %s", string(body))
+	}
+
+	// 4. API 404 does NOT fall back to index.html
+	resp, err = client.Get(server.URL + "/api/unknown-endpoint")
+	if err != nil {
+		t.Fatalf("GET /api/unknown-endpoint: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown API path, got %d", resp.StatusCode)
+	}
+
+	// 5. POST on static route returns 405
+	resp, err = client.Post(server.URL+"/some-page", "text/plain", nil)
+	if err != nil {
+		t.Fatalf("POST /some-page: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for POST to static route, got %d", resp.StatusCode)
 	}
 }

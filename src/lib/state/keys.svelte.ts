@@ -47,3 +47,5 @@ export class KeysState {
 		this.items = this.items.filter((k) => k.id !== id);
 	}
 }
+
+export const keysState = new KeysState();
