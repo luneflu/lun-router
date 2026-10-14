@@ -7,11 +7,11 @@ import (
 	"lun-router/internal/store"
 )
 
-func NewRouter(ks *store.KeyStore, client *opencode.Client) http.Handler {
+func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client) http.Handler {
 	mux := http.NewServeMux()
 
 	keyH := NewKeyHandler(ks)
-	compH := NewCompletionHandler(ks, client)
+	compH := NewCompletionHandler(ks, ms, client)
 
 	// API Keys Management
 	mux.HandleFunc("GET /api/health", keyH.Health)
@@ -27,6 +27,12 @@ func NewRouter(ks *store.KeyStore, client *opencode.Client) http.Handler {
 	mux.HandleFunc("GET /api/opencode/models", compH.Models)
 	mux.HandleFunc("POST /v1/chat/completions", compH.ChatCompletions)
 	mux.HandleFunc("POST /api/chat/completions", compH.ChatCompletions)
+
+	// Provider Model Management (Enable / Disable)
+	mux.HandleFunc("GET /api/providers/opencode/models", compH.ProviderModels)
+	mux.HandleFunc("PUT /api/providers/opencode/models", compH.UpdateProviderModels)
+	mux.HandleFunc("POST /api/providers/opencode/version/refresh", compH.RefreshVersion)
+	mux.HandleFunc("POST /api/models/test", compH.TestModel)
 
 	return corsMiddleware(mux)
 }

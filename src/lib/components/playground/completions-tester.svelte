@@ -5,7 +5,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Switch } from '$lib/components/ui/switch';
-	import type { APIKey } from '$lib/types';
+	import type { APIKey, ProviderModel } from '$lib/types';
 	import { sendChatCompletion } from '$lib/api/completions';
 
 	import BotIcon from '@lucide/svelte/icons/bot';
@@ -17,9 +17,23 @@
 
 	interface Props {
 		keys: APIKey[];
+		models?: ProviderModel[];
+		selectedModel?: string;
 	}
 
-	let { keys }: Props = $props();
+	let { keys, models, selectedModel }: Props = $props();
+
+	const defaultFallbackModels = [
+		'big-pickle',
+		'ling-3.1-flash-free',
+		'cat-jam-free',
+		'mimo-v2.6-flash-free',
+		'nemotron-3.5-lightning-free',
+		'longcat-2.5-preview-free',
+		'space-bunny-free',
+		'muse-spark-1.2-contributor-free',
+		'muse-spark-1.3-contributor-free'
+	];
 
 	let model = $state('big-pickle');
 	let prompt = $state('Write a haiku about routing AI models.');
@@ -31,17 +45,18 @@
 	let latencyMs = $state<number | null>(null);
 	let copied = $state(false);
 
-	const availableModels = [
-		'big-pickle',
-		'ling-3.1-flash-free',
-		'cat-jam-free',
-		'mimo-v2.6-flash-free',
-		'nemotron-3.5-lightning-free',
-		'longcat-2.5-preview-free',
-		'space-bunny-free',
-		'muse-spark-1.2-contributor-free',
-		'muse-spark-1.3-contributor-free'
-	];
+	let modelOptions = $derived(
+		models && models.length > 0
+			? models.map((m) => ({ id: m.id, enabled: m.enabled }))
+			: defaultFallbackModels.map((m) => ({ id: m, enabled: true }))
+	);
+
+	// Sync with selectedModel prop if passed
+	$effect(() => {
+		if (selectedModel) {
+			model = selectedModel;
+		}
+	});
 
 	// Auto-select first active key if none selected
 	$effect(() => {
@@ -143,8 +158,11 @@
 					bind:value={model}
 					class="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
 				>
-					{#each availableModels as m (m)}
-						<option value={m}>{m}</option>
+					{#each modelOptions as m (m.id)}
+						<option value={m.id} disabled={!m.enabled}>
+							{m.id}
+							{m.enabled ? '' : ' (Disabled)'}
+						</option>
 					{/each}
 				</select>
 			</div>

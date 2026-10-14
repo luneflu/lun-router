@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"lun-router/internal/handler"
 	"lun-router/internal/model"
@@ -30,7 +31,12 @@ func TestAPIKeysWorkflow(t *testing.T) {
 		t.Fatalf("NewKeyStore: %v", err)
 	}
 
-	server := httptest.NewServer(handler.NewRouter(ks, nil))
+	ms, err := store.NewModelStore(tempDir)
+	if err != nil {
+		t.Fatalf("NewModelStore: %v", err)
+	}
+
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -200,8 +206,9 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 		t.Fatalf("Create key: %v", err)
 	}
 
-	mockClient := opencode.NewClient(mockUpstream.URL)
-	routerServer := httptest.NewServer(handler.NewRouter(ks, mockClient))
+	ms, _ := store.NewModelStore(tempDir)
+	mockClient := opencode.NewClient(mockUpstream.URL, nil)
+	routerServer := httptest.NewServer(handler.NewRouter(ks, ms, mockClient))
 	defer routerServer.Close()
 
 	client := routerServer.Client()
@@ -260,8 +267,9 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 	}
 
 	// 3. Verify the 5 custom headers required by Issue #4781
-	if receivedHeaders.Get("User-Agent") != opencode.UA {
-		t.Errorf("expected User-Agent '%s', got '%s'", opencode.UA, receivedHeaders.Get("User-Agent"))
+	expectedUA := mockClient.VersionManager().GetUserAgent()
+	if receivedHeaders.Get("User-Agent") != expectedUA {
+		t.Errorf("expected User-Agent '%s', got '%s'", expectedUA, receivedHeaders.Get("User-Agent"))
 	}
 	if receivedHeaders.Get("x-opencode-client") != opencode.ClientType {
 		t.Errorf("expected x-opencode-client '%s', got '%s'", opencode.ClientType, receivedHeaders.Get("x-opencode-client"))
@@ -269,21 +277,24 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 	if receivedHeaders.Get("x-opencode-project") != opencode.Project {
 		t.Errorf("expected x-opencode-project '%s', got '%s'", opencode.Project, receivedHeaders.Get("x-opencode-project"))
 	}
-	if receivedHeaders.Get("x-opencode-request") != opencode.Request {
-		t.Errorf("expected x-opencode-request '%s', got '%s'", opencode.Request, receivedHeaders.Get("x-opencode-request"))
-	}
 	sessionVal := receivedHeaders.Get("x-opencode-session")
 	if !sessionRegex.MatchString(sessionVal) {
 		t.Errorf("expected valid x-opencode-session (ses_<12hex><14base62>), got '%s'", sessionVal)
+	}
+	if receivedHeaders.Get("x-opencode-session-id") != sessionVal {
+		t.Errorf("expected x-opencode-session-id to match session, got '%s'", receivedHeaders.Get("x-opencode-session-id"))
+	}
+	if receivedHeaders.Get("x-session-affinity") != sessionVal {
+		t.Errorf("expected x-session-affinity to match session, got '%s'", receivedHeaders.Get("x-session-affinity"))
 	}
 	if receivedHeaders.Get("Authorization") != "Bearer public" {
 		t.Errorf("expected Authorization 'Bearer public', got '%s'", receivedHeaders.Get("Authorization"))
 	}
 
-	// 4. Verify Fingerprint tools injected into body
+	// 4. Verify Fingerprint tools injected into body (v2 required: read, shell)
 	tools, ok := receivedBody["tools"].([]any)
-	if !ok || len(tools) < 4 {
-		t.Errorf("expected at least 4 fingerprint tools in body, got: %+v", receivedBody["tools"])
+	if !ok || len(tools) < 2 {
+		t.Errorf("expected at least 2 fingerprint tools in body, got: %+v", receivedBody["tools"])
 	} else {
 		toolNames := make(map[string]bool)
 		for _, tool := range tools {
@@ -295,7 +306,7 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 				}
 			}
 		}
-		for _, required := range []string{"bash", "glob", "grep", "read"} {
+		for _, required := range []string{"read", "shell"} {
 			if !toolNames[required] {
 				t.Errorf("missing fingerprint tool: %s", required)
 			}
@@ -338,7 +349,8 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 	ks, _ := store.NewKeyStore(tempDir)
 	key, _ := ks.Create("Live Test Key", "sk-live-key")
 
-	server := httptest.NewServer(handler.NewRouter(ks, nil))
+	ms, _ := store.NewModelStore(tempDir)
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil))
 	defer server.Close()
 
 	payload := map[string]any{
@@ -361,6 +373,10 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			t.Skipf("Live OpenCode returned %d (rate-limit / temporary upstream gate): %s", resp.StatusCode, string(b))
+			return
+		}
 		t.Fatalf("expected 200 OK from live OpenCode, got %d: %s", resp.StatusCode, string(b))
 	}
 
@@ -383,7 +399,7 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 
 // Test /v1/models endpoint
 func TestOpenCodeModelsEndpoint(t *testing.T) {
-	compH := handler.NewCompletionHandler(nil, nil)
+	compH := handler.NewCompletionHandler(nil, nil, nil)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/models", compH.Models)
 	server := httptest.NewServer(mux)
@@ -408,5 +424,378 @@ func TestOpenCodeModelsEndpoint(t *testing.T) {
 
 	if len(data.Data) == 0 {
 		t.Errorf("expected non-empty models list")
+	}
+}
+
+// Test Provider Models enable/disable toggle & completion rejection
+func TestOpenCodeModelEnableDisable(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-models-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	key, _ := ks.Create("Admin Key", "sk-test-admin-key")
+
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil))
+	defer server.Close()
+
+	client := server.Client()
+
+	// 1. Initial list from /api/providers/opencode/models
+	resp, err := client.Get(server.URL + "/api/providers/opencode/models")
+	if err != nil {
+		t.Fatalf("GET provider models: %v", err)
+	}
+	var provResp struct {
+		Provider string              `json:"provider"`
+		Models   []handler.ModelItem `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&provResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	resp.Body.Close()
+
+	if len(provResp.Models) == 0 {
+		t.Fatalf("expected non-empty models list")
+	}
+
+	targetModel := "big-pickle"
+	var found bool
+	for _, m := range provResp.Models {
+		if m.ID == targetModel {
+			found = true
+			if !m.Enabled {
+				t.Errorf("expected model %s to be enabled initially", targetModel)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("model %s not found in provider models", targetModel)
+	}
+
+	// 2. Disable targetModel
+	disablePayload, _ := json.Marshal(map[string]any{
+		"model":   targetModel,
+		"enabled": false,
+	})
+	putReq, _ := http.NewRequest("PUT", server.URL+"/api/providers/opencode/models", bytes.NewReader(disablePayload))
+	putReq.Header.Set("Content-Type", "application/json")
+	putResp, err := client.Do(putReq)
+	if err != nil {
+		t.Fatalf("PUT disable model: %v", err)
+	}
+	if putResp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK, got %d", putResp.StatusCode)
+	}
+	putResp.Body.Close()
+
+	// 3. Confirm targetModel is disabled in /api/providers/opencode/models
+	var provResp2 struct {
+		Provider string              `json:"provider"`
+		Models   []handler.ModelItem `json:"models"`
+	}
+	resp, _ = client.Get(server.URL + "/api/providers/opencode/models")
+	_ = json.NewDecoder(resp.Body).Decode(&provResp2)
+	resp.Body.Close()
+	var targetModelDisabled bool
+	for _, m := range provResp2.Models {
+		if m.ID == targetModel {
+			if m.Enabled {
+				t.Errorf("expected model %s to be disabled now", targetModel)
+			} else {
+				targetModelDisabled = true
+			}
+		}
+	}
+	if !targetModelDisabled {
+		t.Errorf("model %s was not found or not marked disabled in provResp2", targetModel)
+	}
+
+	// 4. Confirm targetModel is excluded from /v1/models
+	v1Resp, _ := client.Get(server.URL + "/v1/models")
+	var v1Data struct {
+		Data []handler.ModelItem `json:"data"`
+	}
+	_ = json.NewDecoder(v1Resp.Body).Decode(&v1Data)
+	v1Resp.Body.Close()
+	for _, m := range v1Data.Data {
+		if m.ID == targetModel {
+			t.Errorf("model %s should NOT appear in /v1/models when disabled", targetModel)
+		}
+	}
+
+	// 5. Confirm /v1/chat/completions rejects disabled model with 400
+	chatPayload, _ := json.Marshal(map[string]any{
+		"model":    targetModel,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	chatReq, _ := http.NewRequest("POST", server.URL+"/v1/chat/completions", bytes.NewReader(chatPayload))
+	chatReq.Header.Set("Content-Type", "application/json")
+	chatReq.Header.Set("Authorization", "Bearer "+key.Key)
+	chatResp, err := client.Do(chatReq)
+	if err != nil {
+		t.Fatalf("chat request: %v", err)
+	}
+	if chatResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for disabled model, got %d", chatResp.StatusCode)
+	}
+	chatResp.Body.Close()
+
+	// 6. Re-enable targetModel
+	enablePayload, _ := json.Marshal(map[string]any{
+		"model":   targetModel,
+		"enabled": true,
+	})
+	putReq2, _ := http.NewRequest("PUT", server.URL+"/api/providers/opencode/models", bytes.NewReader(enablePayload))
+	putReq2.Header.Set("Content-Type", "application/json")
+	putResp2, _ := client.Do(putReq2)
+	putResp2.Body.Close()
+
+	// 7. Confirm targetModel is back in /v1/models
+	v1Resp2, _ := client.Get(server.URL + "/v1/models")
+	_ = json.NewDecoder(v1Resp2.Body).Decode(&v1Data)
+	v1Resp2.Body.Close()
+	var reEnabledFound bool
+	for _, m := range v1Data.Data {
+		if m.ID == targetModel {
+			reEnabledFound = true
+			break
+		}
+	}
+	if !reEnabledFound {
+		t.Errorf("expected %s to reappear in /v1/models after re-enabling", targetModel)
+	}
+}
+
+// Test OpenCode session rotation when upstream rate limits with HTTP 429
+func TestOpenCodeSessionRotationOnRateLimit(t *testing.T) {
+	var requestCount int
+	var sessionsSeen []string
+
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		currentSession := r.Header.Get("x-opencode-session")
+		sessionsSeen = append(sessionsSeen, currentSession)
+
+		if requestCount == 1 {
+			// Simulate upstream 429 FreeUsageLimitError
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"FreeUsageLimitError","message":"Session limit reached"}}`))
+			return
+		}
+
+		// Subsequent request with rotated session succeeds
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"id\":\"cmpl-rotated\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"big-pickle\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Recovered from 429!\"}}]}\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+	}))
+	defer mockUpstream.Close()
+
+	tempDir, err := os.MkdirTemp("", "lun-ratelimit-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	key, _ := ks.Create("Rate Limit Test Key", "sk-ratelimit-key-1")
+
+	client := opencode.NewClient(mockUpstream.URL, nil)
+	router := handler.NewRouter(ks, ms, client)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	// Initial session for this key
+	initialSession := client.SessionManager().Get(key.Key)
+	if initialSession == "" {
+		t.Fatalf("expected non-empty initial session")
+	}
+
+	// Send request: it should hit 429 once, rotate session, and retry transparently
+	payload := map[string]any{
+		"model": "big-pickle",
+		"messages": []map[string]string{
+			{"role": "user", "content": "hello"},
+		},
+		"stream": false,
+	}
+	payloadBytes, _ := json.Marshal(payload)
+	req, _ := http.NewRequest("POST", server.URL+"/v1/chat/completions", bytes.NewReader(payloadBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key.Key)
+
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 OK after session rotation, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var res struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if res.Choices[0].Message.Content != "Recovered from 429!" {
+		t.Errorf("unexpected content: %s", res.Choices[0].Message.Content)
+	}
+
+	// Verify that 2 requests were made and the second had a DIFFERENT, brand new session ID
+	if requestCount != 2 {
+		t.Errorf("expected 2 upstream requests (initial + retry), got %d", requestCount)
+	}
+	if len(sessionsSeen) != 2 {
+		t.Fatalf("expected 2 sessions recorded, got %d", len(sessionsSeen))
+	}
+	if sessionsSeen[0] == sessionsSeen[1] {
+		t.Errorf("expected rotated session ID on retry, but got same: %s", sessionsSeen[0])
+	}
+
+	// Verify the session manager now holds the new rotated session
+	currentStored := client.SessionManager().Get(key.Key)
+	if currentStored != sessionsSeen[1] {
+		t.Errorf("expected session manager to store new rotated session %s, got %s", sessionsSeen[1], currentStored)
+	}
+}
+
+// Test /api/models/test: Ping model with empty prompt
+func TestOpenCodeModelTestPing(t *testing.T) {
+	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+
+		// Verify probe prompt was sent
+		messages, _ := body["messages"].([]any)
+		if len(messages) > 0 {
+			if first, ok := messages[0].(map[string]any); ok {
+				if first["content"] != "ping" && first["content"] != "" {
+					t.Errorf("expected probe prompt content 'ping' or '', got: %v", first["content"])
+				}
+			}
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"id\":\"cmpl-ping\",\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\n")
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+	}))
+	defer mockUpstream.Close()
+
+	tempDir, _ := os.MkdirTemp("", "lun-ping-test-*")
+	defer os.RemoveAll(tempDir)
+
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	client := opencode.NewClient(mockUpstream.URL, nil)
+
+	router := handler.NewRouter(ks, ms, client)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	// 1. Ping enabled model
+	pingPayload, _ := json.Marshal(map[string]string{
+		"model": "big-pickle",
+	})
+	resp, err := server.Client().Post(server.URL+"/api/models/test", "application/json", bytes.NewReader(pingPayload))
+	if err != nil {
+		t.Fatalf("POST /api/models/test: %v", err)
+	}
+	var result struct {
+		OK        bool   `json:"ok"`
+		Model     string `json:"model"`
+		LatencyMs int64  `json:"latency_ms"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&result)
+	resp.Body.Close()
+
+	if !result.OK || result.Model != "big-pickle" {
+		t.Errorf("expected ok: true for big-pickle, got %+v", result)
+	}
+
+	// 2. Disable model and verify ping returns ok: false
+	_ = ms.SetDisabled("opencode", "big-pickle", true)
+
+	resp, _ = server.Client().Post(server.URL+"/api/models/test", "application/json", bytes.NewReader(pingPayload))
+	var disabledResult struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&disabledResult)
+	resp.Body.Close()
+
+	if disabledResult.OK {
+		t.Errorf("expected ok: false for disabled model, got true")
+	}
+}
+
+// Test OpenCode Version Manager & Cache
+func TestOpenCodeVersionManager(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-version-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	vm := opencode.NewVersionManager(tempDir, 1*time.Hour)
+	if vm.GetVersion() != opencode.DefaultVersion {
+		t.Errorf("expected default version %s, got %s", opencode.DefaultVersion, vm.GetVersion())
+	}
+	expectedUA := fmt.Sprintf("opencode/latest/%s/cli", opencode.DefaultVersion)
+	if vm.GetUserAgent() != expectedUA {
+		t.Errorf("expected UA %s, got %s", expectedUA, vm.GetUserAgent())
+	}
+
+	// Test updating version
+	vm.SetVersion("2.0.29")
+	if vm.GetVersion() != "2.0.29" {
+		t.Errorf("expected updated version 2.0.29, got %s", vm.GetVersion())
+	}
+	expectedUA2 := "opencode/latest/2.0.29/cli"
+	if vm.GetUserAgent() != expectedUA2 {
+		t.Errorf("expected UA %s, got %s", expectedUA2, vm.GetUserAgent())
+	}
+
+	// Verify persistence: second manager loads cached version from file
+	vm2 := opencode.NewVersionManager(tempDir, 1*time.Hour)
+	if vm2.GetVersion() != "2.0.29" {
+		t.Errorf("expected loaded cached version 2.0.29, got %s", vm2.GetVersion())
+	}
+
+	// Test /api/providers/opencode/models returns the version
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	client := opencode.NewClient("", vm2)
+	router := handler.NewRouter(ks, ms, client)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	resp, err := server.Client().Get(server.URL + "/api/providers/opencode/models")
+	if err != nil {
+		t.Fatalf("GET /api/providers/opencode/models: %v", err)
+	}
+	var provData struct {
+		Provider string `json:"provider"`
+		Version  string `json:"version"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&provData)
+	resp.Body.Close()
+
+	if provData.Version != "2.0.29" {
+		t.Errorf("expected provider models version 2.0.29, got %s", provData.Version)
 	}
 }

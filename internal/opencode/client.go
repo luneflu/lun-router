@@ -17,7 +17,7 @@ import (
 
 const (
 	BaseURL    = "https://opencode.ai"
-	UA         = "opencode/1.18.31"
+	UA         = "opencode/1.18.35"
 	ClientType = "cli"
 	Project    = "global"
 	Request    = "_msg"
@@ -36,18 +36,33 @@ var FallbackModels = []string{
 }
 
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL        string
+	httpClient     *http.Client
+	sessionManager *SessionManager
+	versionManager *VersionManager
 }
 
-func NewClient(baseURL string) *Client {
+func NewClient(baseURL string, vm *VersionManager) *Client {
 	if baseURL == "" {
 		baseURL = BaseURL
 	}
-	return &Client{
-		baseURL:    baseURL,
-		httpClient: http.DefaultClient,
+	if vm == nil {
+		vm = NewVersionManager("", 0)
 	}
+	return &Client{
+		baseURL:        baseURL,
+		httpClient:     http.DefaultClient,
+		sessionManager: NewSessionManager(30 * time.Minute),
+		versionManager: vm,
+	}
+}
+
+func (c *Client) SessionManager() *SessionManager {
+	return c.sessionManager
+}
+
+func (c *Client) VersionManager() *VersionManager {
+	return c.versionManager
 }
 
 // FetchModels retrieves the catalog from OpenCode Free
@@ -56,7 +71,7 @@ func (c *Client) FetchModels(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", UA)
+	req.Header.Set("User-Agent", c.versionManager.GetUserAgent())
 	req.Header.Set("x-opencode-client", ClientType)
 
 	resp, err := c.httpClient.Do(req)
@@ -72,8 +87,15 @@ func (c *Client) FetchModels(ctx context.Context) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// ExecuteChat sends chat request to OpenCode Free with Issue #4781 bypass headers
-func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any) (*http.Response, error) {
+// ExecuteChat sends chat request to OpenCode Free with Issue #4781 bypass headers.
+// If customSession is provided, it uses it; otherwise uses managed session.
+// If upstream returns HTTP 429 Too Many Requests (session quota limit),
+// it automatically rotates the session for this identity and retries once.
+func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any, identity string, customSession string) (*http.Response, error) {
+	if identity == "" {
+		identity = "default"
+	}
+
 	model, _ := bodyMap["model"].(string)
 	if model == "" {
 		model = "big-pickle"
@@ -83,12 +105,82 @@ func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any) (*http
 	// Upstream always requires stream: true
 	bodyMap["stream"] = true
 
-	// Apply required fingerprint tools
-	ApplyFingerprint(bodyMap)
+	isResponses := strings.HasPrefix(model, "muse-spark")
+	if isResponses {
+		if maxTok, hasMax := bodyMap["max_tokens"]; hasMax {
+			if _, hasOutput := bodyMap["max_output_tokens"]; !hasOutput {
+				bodyMap["max_output_tokens"] = maxTok
+			}
+			delete(bodyMap, "max_tokens")
+		}
+		delete(bodyMap, "max_completion_tokens")
 
-	targetURL := c.baseURL + "/zen/v1/chat/completions"
-	if strings.HasPrefix(model, "muse-spark") {
-		targetURL = c.baseURL + "/zen/v1/responses"
+		var input []map[string]any
+
+		switch msgs := bodyMap["messages"].(type) {
+		case []any:
+			for _, m := range msgs {
+				if mMap, ok := m.(map[string]any); ok {
+					role, _ := mMap["role"].(string)
+					content, _ := mMap["content"].(string)
+					input = append(input, map[string]any{
+						"type": "message",
+						"role": role,
+						"content": []map[string]any{
+							{"type": "input_text", "text": content},
+						},
+					})
+				}
+			}
+		case []map[string]string:
+			for _, mMap := range msgs {
+				input = append(input, map[string]any{
+					"type": "message",
+					"role": mMap["role"],
+					"content": []map[string]any{
+						{"type": "input_text", "text": mMap["content"]},
+					},
+				})
+			}
+		case []map[string]any:
+			for _, mMap := range msgs {
+				role, _ := mMap["role"].(string)
+				content, _ := mMap["content"].(string)
+				input = append(input, map[string]any{
+					"type": "message",
+					"role": role,
+					"content": []map[string]any{
+						{"type": "input_text", "text": content},
+					},
+				})
+			}
+		}
+
+		if len(input) == 0 {
+			input = []map[string]any{
+				{
+					"type": "message",
+					"role": "user",
+					"content": []map[string]any{
+						{"type": "input_text", "text": ""},
+					},
+				},
+			}
+		}
+
+		bodyMap["input"] = input
+		delete(bodyMap, "messages")
+		bodyMap["store"] = false
+	} else {
+		delete(bodyMap, "max_output_tokens")
+	}
+
+	// Apply required fingerprint tools (read and shell for v2)
+	ApplyFingerprint(bodyMap, isResponses)
+
+	targetURL := c.baseURL + "/inference/v1/chat/completions"
+	if isResponses {
+		targetURL = c.baseURL + "/inference/v1/responses"
 	}
 
 	payloadBytes, err := json.Marshal(bodyMap)
@@ -96,17 +188,41 @@ func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any) (*http
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	sessionID := customSession
+	if sessionID == "" {
+		sessionID = c.sessionManager.Get(identity)
+	}
+
+	resp, err := c.doRequest(ctx, targetURL, payloadBytes, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	// If rate-limited (429): rotate session and immediately retry once with fresh session
+	if resp.StatusCode == http.StatusTooManyRequests {
+		resp.Body.Close()
+
+		newSessionID := c.sessionManager.Rotate(identity)
+		return c.doRequest(ctx, targetURL, payloadBytes, newSessionID)
+	}
+
+	return resp, nil
+}
+
+func (c *Client) doRequest(ctx context.Context, targetURL string, payloadBytes []byte, sessionID string) (*http.Response, error) {
 	upReq, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(payloadBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	// 5 Custom Headers for OpenCode Free bypass (GitHub Issue #4781)
-	upReq.Header.Set("User-Agent", UA)
+	// Aligned Custom Headers for OpenCode Free v2 (/inference/v1)
+	upReq.Header.Set("User-Agent", c.versionManager.GetUserAgent())
 	upReq.Header.Set("x-opencode-client", ClientType)
 	upReq.Header.Set("x-opencode-project", Project)
-	upReq.Header.Set("x-opencode-request", Request)
-	upReq.Header.Set("x-opencode-session", GenerateSessionID())
+	upReq.Header.Set("x-opencode-session", sessionID)
+	upReq.Header.Set("x-opencode-session-id", sessionID)
+	upReq.Header.Set("x-session-affinity", sessionID)
+	upReq.Header.Set("X-Session-Id", sessionID)
 	upReq.Header.Set("Authorization", "Bearer public")
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Accept", "text/event-stream")
@@ -145,11 +261,20 @@ func AggregateSSEStream(r io.Reader, fallbackModel string) (map[string]any, erro
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
+			// Responses API fields
+			Type     string `json:"type"`
+			Delta    any    `json:"delta"`
+			Response struct {
+				ID string `json:"id"`
+			} `json:"response"`
 		}
 
 		if err := json.Unmarshal([]byte(payload), &chunk); err == nil {
 			if chunk.ID != "" {
 				lastID = chunk.ID
+			}
+			if chunk.Response.ID != "" {
+				lastID = chunk.Response.ID
 			}
 			if chunk.Model != "" {
 				lastModel = chunk.Model
@@ -161,6 +286,16 @@ func AggregateSSEStream(r io.Reader, fallbackModel string) (map[string]any, erro
 				fullText.WriteString(chunk.Choices[0].Delta.Content)
 				if chunk.Choices[0].FinishReason != nil {
 					finishReason = *chunk.Choices[0].FinishReason
+				}
+			}
+			// Parse Responses API stream deltas
+			if chunk.Delta != nil {
+				if dMap, ok := chunk.Delta.(map[string]any); ok {
+					if t, ok := dMap["text"].(string); ok {
+						fullText.WriteString(t)
+					}
+				} else if dStr, ok := chunk.Delta.(string); ok {
+					fullText.WriteString(dStr)
 				}
 			}
 		}

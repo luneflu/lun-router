@@ -86,8 +86,7 @@
 				<Badge variant="outline" class="font-mono text-xs">{keys.length}</Badge>
 			</div>
 			<Card.Description class="text-xs">
-				Manage router keys. Keys authenticate endpoints like <code>/v1/chat/completions</code> and proxy
-				to OpenCode Free.
+				Manage router keys. Keys authenticate endpoints like <code>/v1/chat/completions</code>
 			</Card.Description>
 		</div>
 
@@ -261,6 +260,5 @@
 		class="flex items-center justify-between border-t border-border bg-muted/20 p-3 text-xs text-muted-foreground"
 	>
 		<span>Showing {keys.length} of {totalCount} API keys</span>
-		<span class="font-mono text-[11px]">HMAC-SHA256 CRC8 enabled</span>
 	</Card.Footer>
 </Card.Root>

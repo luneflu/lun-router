@@ -22,3 +22,10 @@ export interface ChatCompletionRequest {
 	messages: ChatMessage[];
 	stream?: boolean;
 }
+
+export interface ProviderModel {
+	id: string;
+	object?: string;
+	owned_by?: string;
+	enabled: boolean;
+}

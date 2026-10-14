@@ -1,16 +1,18 @@
 <script lang="ts">
-	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { cn } from '$lib/utils';
-	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import SunIcon from '@lucide/svelte/icons/sun';
 	import MoonIcon from '@lucide/svelte/icons/moon';
+	import MenuIcon from '@lucide/svelte/icons/menu';
+	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 
 	interface Props {
 		error: string | null;
+		activeView: 'home' | 'opencode';
+		onToggleMobileMenu?: () => void;
 	}
 
-	let { error }: Props = $props();
+	let { error, activeView, onToggleMobileMenu }: Props = $props();
 	let isDark = $state(true);
 
 	function toggleTheme() {
@@ -25,21 +27,31 @@
 </script>
 
 <header
-	class="sticky top-0 z-30 border-b border-border bg-card/75 px-4 py-3 backdrop-blur-md sm:px-8"
+	class="sticky top-0 z-30 flex h-16 items-center border-b border-border bg-card/75 px-4 backdrop-blur-md sm:px-8"
 >
-	<div class="mx-auto flex max-w-6xl items-center justify-between">
+	<div class="flex w-full items-center justify-between">
 		<div class="flex items-center gap-3">
-			<div
-				class="flex size-9 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-primary"
+			<Button
+				variant="ghost"
+				size="icon-sm"
+				class="md:hidden"
+				onclick={onToggleMobileMenu}
+				aria-label="Toggle navigation menu"
 			>
-				<KeyRoundIcon class="size-4" />
-			</div>
-			<div class="flex flex-col">
-				<div class="flex items-center gap-2">
-					<span class="text-base font-semibold tracking-tight">Lun Router</span>
-					<Badge variant="secondary" class="text-[10px] font-medium">9router Go</Badge>
-				</div>
-				<span class="text-xs text-muted-foreground">API Key & OpenCode Free Completions</span>
+				<MenuIcon class="size-4" />
+			</Button>
+
+			<!-- Breadcrumb -->
+			<div class="flex items-center gap-1.5 text-xs">
+				<span class="font-medium text-muted-foreground">Dashboard</span>
+				<ChevronRightIcon class="size-3 text-muted-foreground/60" />
+				{#if activeView === 'home'}
+					<span class="font-semibold text-foreground">Home</span>
+				{:else}
+					<span class="text-muted-foreground">Providers</span>
+					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
+					<span class="font-semibold text-foreground">OpenCode Free</span>
+				{/if}
 			</div>
 		</div>
 
