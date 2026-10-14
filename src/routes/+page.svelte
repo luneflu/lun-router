@@ -26,7 +26,6 @@
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import BotIcon from '@lucide/svelte/icons/bot';
-	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 
 	interface APIKey {
 		id: string;
@@ -343,35 +342,11 @@
 				<div class="flex flex-col">
 					<div class="flex items-center gap-2">
 						<span class="text-base font-semibold tracking-tight">Lun Router</span>
-						<Badge variant="secondary" class="text-[10px] font-medium">9router Go</Badge>
-						<Badge variant="outline" class="border-emerald-500/30 text-[10px] text-emerald-500">
-							OpenCode Free #4781
-						</Badge>
 					</div>
-					<span class="text-xs text-muted-foreground">API Key & OpenCode Free Completions</span>
 				</div>
 			</div>
 
 			<div class="flex items-center gap-2 sm:gap-3">
-				<!-- Backend status indicator -->
-				<div class="hidden items-center gap-2 rounded-full bg-muted px-2.5 py-1 text-xs sm:flex">
-					<span
-						class={cn(
-							'size-2 rounded-full',
-							error ? 'animate-pulse bg-destructive' : 'bg-emerald-500'
-						)}
-					></span>
-					<span class="text-muted-foreground">Backend:</span>
-					<span
-						class={cn(
-							'font-mono text-[11px]',
-							error ? 'font-medium text-destructive' : 'text-foreground'
-						)}
-					>
-						{error ? 'offline' : 'Go :8080'}
-					</span>
-				</div>
-
 				<!-- Dark / Light theme toggle -->
 				<Button
 					variant="ghost"
@@ -385,19 +360,6 @@
 					{:else}
 						<MoonIcon class="size-4" />
 					{/if}
-				</Button>
-
-				<!-- Create Key Button -->
-				<Button
-					variant="default"
-					size="sm"
-					onclick={() => {
-						modalError = null;
-						isCreateOpen = true;
-					}}
-				>
-					<PlusIcon data-icon="inline-start" />
-					Create Key
 				</Button>
 			</div>
 		</div>
@@ -420,7 +382,7 @@
 		{/if}
 
 		<!-- Stats Overview Cards -->
-		<div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+		<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
 			<Card.Root>
 				<Card.Header class="flex flex-row items-center justify-between pb-2">
 					<Card.Title class="text-xs font-medium text-muted-foreground">Total API Keys</Card.Title>
@@ -448,25 +410,6 @@
 				<Card.Content>
 					<div class="text-2xl font-bold text-emerald-500">{activeCount}</div>
 					<p class="mt-1 text-xs text-muted-foreground">Ready for completions</p>
-				</Card.Content>
-			</Card.Root>
-
-			<Card.Root>
-				<Card.Header class="flex flex-row items-center justify-between pb-2">
-					<Card.Title class="text-xs font-medium text-muted-foreground"
-						>OpenCode Free Bypass</Card.Title
-					>
-					<div
-						class="flex size-8 items-center justify-center rounded-md bg-primary/10 text-primary"
-					>
-						<ShieldCheckIcon class="size-4" />
-					</div>
-				</Card.Header>
-				<Card.Content>
-					<div class="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-						<span>Issue #4781 Fix Active</span>
-					</div>
-					<p class="mt-1 text-xs text-muted-foreground">5 custom headers + fingerprint quartet</p>
 				</Card.Content>
 			</Card.Root>
 		</div>
@@ -628,7 +571,6 @@
 					</div>
 					<Card.Description class="text-xs">
 						Manage router keys. Keys authenticate endpoints like <code>/v1/chat/completions</code> and
-						proxy to OpenCode Free.
 					</Card.Description>
 				</div>
 
@@ -819,27 +761,7 @@
 				class="flex items-center justify-between border-t border-border bg-muted/20 p-3 text-xs text-muted-foreground"
 			>
 				<span>Showing {filteredKeys.length} of {keys.length} API keys</span>
-				<span class="font-mono text-[11px]">HMAC-SHA256 CRC8 enabled</span>
 			</Card.Footer>
-		</Card.Root>
-
-		<!-- Router usage info card -->
-		<Card.Root class="border-dashed bg-muted/30">
-			<Card.Content
-				class="flex flex-col justify-between gap-3 p-4 text-xs sm:flex-row sm:items-center"
-			>
-				<div class="flex flex-col gap-0.5">
-					<span class="font-medium text-foreground">OpenAI-Compatible Endpoint</span>
-					<span class="text-muted-foreground"
-						>Compatible with Cursor, Claude Code, Cline, and any OpenAI SDK:</span
-					>
-				</div>
-				<code
-					class="rounded border border-border bg-background px-2.5 py-1 font-mono text-[11px] text-foreground select-all"
-				>
-					POST /v1/chat/completions (Bearer &lt;key&gt;)
-				</code>
-			</Card.Content>
 		</Card.Root>
 	</main>
 </div>
