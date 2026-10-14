@@ -11,6 +11,11 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"lun-router/internal/handler"
+	"lun-router/internal/model"
+	"lun-router/internal/opencode"
+	"lun-router/internal/store"
 )
 
 func TestAPIKeysWorkflow(t *testing.T) {
@@ -20,12 +25,12 @@ func TestAPIKeysWorkflow(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	ks, err := NewKeyStore(tempDir)
+	ks, err := store.NewKeyStore(tempDir)
 	if err != nil {
 		t.Fatalf("NewKeyStore: %v", err)
 	}
 
-	server := httptest.NewServer(setupRoutes(ks))
+	server := httptest.NewServer(handler.NewRouter(ks, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -36,7 +41,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 		t.Fatalf("GET /api/keys: %v", err)
 	}
 	var listResp struct {
-		Keys []APIKey `json:"keys"`
+		Keys []model.APIKey `json:"keys"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
 		t.Fatalf("decode list: %v", err)
@@ -47,7 +52,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 	}
 
 	// 2. Create auto-generated key
-	autoPayload, _ := json.Marshal(CreateKeyRequest{Name: "Auto Key"})
+	autoPayload, _ := json.Marshal(model.CreateKeyRequest{Name: "Auto Key"})
 	resp, err = client.Post(server.URL+"/api/keys", "application/json", bytes.NewReader(autoPayload))
 	if err != nil {
 		t.Fatalf("POST auto key: %v", err)
@@ -55,7 +60,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
 	}
-	var autoKey APIKey
+	var autoKey model.APIKey
 	if err := json.NewDecoder(resp.Body).Decode(&autoKey); err != nil {
 		t.Fatalf("decode auto key: %v", err)
 	}
@@ -73,7 +78,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 	}
 
 	// 3. Create custom key
-	customPayload, _ := json.Marshal(CreateKeyRequest{
+	customPayload, _ := json.Marshal(model.CreateKeyRequest{
 		Name: "Custom Key",
 		Key:  "my-custom-secret-key-12345",
 	})
@@ -84,7 +89,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
 	}
-	var customKey APIKey
+	var customKey model.APIKey
 	if err := json.NewDecoder(resp.Body).Decode(&customKey); err != nil {
 		t.Fatalf("decode custom key: %v", err)
 	}
@@ -109,7 +114,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 	// 5. Update key (toggle inactive)
 	inactive := false
 	newName := "Renamed Auto Key"
-	updatePayload, _ := json.Marshal(UpdateKeyRequest{
+	updatePayload, _ := json.Marshal(model.UpdateKeyRequest{
 		Name:     &newName,
 		IsActive: &inactive,
 	})
@@ -120,7 +125,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 		t.Fatalf("PUT /api/keys: %v", err)
 	}
 	var updatedResp struct {
-		Key APIKey `json:"key"`
+		Key model.APIKey `json:"key"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&updatedResp)
 	resp.Body.Close()
@@ -165,7 +170,6 @@ func TestAPIKeysWorkflow(t *testing.T) {
 func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 	sessionRegex := regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`)
 
-	// 1. Mock upstream OpenCode server capturing received headers and body
 	var receivedHeaders http.Header
 	var receivedBody map[string]any
 
@@ -174,21 +178,19 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		// Emit sample SSE chunks
 		fmt.Fprintf(w, "data: {\"id\":\"cmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"big-pickle\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello\"}}]}\n\n")
 		fmt.Fprintf(w, "data: {\"id\":\"cmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"big-pickle\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world!\"}}]}\n\n")
 		fmt.Fprintf(w, "data: [DONE]\n\n")
 	}))
 	defer mockUpstream.Close()
 
-	// 2. Setup KeyStore & Router
 	tempDir, err := os.MkdirTemp("", "lun-opencode-test-*")
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	ks, err := NewKeyStore(tempDir)
+	ks, err := store.NewKeyStore(tempDir)
 	if err != nil {
 		t.Fatalf("NewKeyStore: %v", err)
 	}
@@ -198,15 +200,13 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 		t.Fatalf("Create key: %v", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/chat/completions", handleOpenCodeChatCompletions(ks, mockUpstream.URL))
-	mux.HandleFunc("GET /v1/models", handleOpenCodeModels)
-	routerServer := httptest.NewServer(mux)
+	mockClient := opencode.NewClient(mockUpstream.URL)
+	routerServer := httptest.NewServer(handler.NewRouter(ks, mockClient))
 	defer routerServer.Close()
 
 	client := routerServer.Client()
 
-	// 3. Test Unauthorized request (missing key)
+	// 1. Test Unauthorized request (missing key)
 	unauthReq, _ := http.NewRequest("POST", routerServer.URL+"/v1/chat/completions", bytes.NewReader([]byte(`{}`)))
 	unauthReq.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(unauthReq)
@@ -218,7 +218,7 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// 4. Test Non-streaming request with Issue #4781 verification
+	// 2. Test Non-streaming request with Issue #4781 verification
 	compPayload := map[string]any{
 		"model": "big-pickle",
 		"messages": []map[string]string{
@@ -255,23 +255,22 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// Verify aggregated text
 	if completionResp.Choices[0].Message.Content != "Hello world!" {
 		t.Errorf("expected aggregated 'Hello world!', got '%s'", completionResp.Choices[0].Message.Content)
 	}
 
-	// 5. Verify the 5 custom headers required by Issue #4781
-	if receivedHeaders.Get("User-Agent") != "opencode/1.18.31" {
-		t.Errorf("expected User-Agent 'opencode/1.18.31', got '%s'", receivedHeaders.Get("User-Agent"))
+	// 3. Verify the 5 custom headers required by Issue #4781
+	if receivedHeaders.Get("User-Agent") != opencode.UA {
+		t.Errorf("expected User-Agent '%s', got '%s'", opencode.UA, receivedHeaders.Get("User-Agent"))
 	}
-	if receivedHeaders.Get("x-opencode-client") != "cli" {
-		t.Errorf("expected x-opencode-client 'cli', got '%s'", receivedHeaders.Get("x-opencode-client"))
+	if receivedHeaders.Get("x-opencode-client") != opencode.ClientType {
+		t.Errorf("expected x-opencode-client '%s', got '%s'", opencode.ClientType, receivedHeaders.Get("x-opencode-client"))
 	}
-	if receivedHeaders.Get("x-opencode-project") != "global" {
-		t.Errorf("expected x-opencode-project 'global', got '%s'", receivedHeaders.Get("x-opencode-project"))
+	if receivedHeaders.Get("x-opencode-project") != opencode.Project {
+		t.Errorf("expected x-opencode-project '%s', got '%s'", opencode.Project, receivedHeaders.Get("x-opencode-project"))
 	}
-	if receivedHeaders.Get("x-opencode-request") != "_msg" {
-		t.Errorf("expected x-opencode-request '_msg', got '%s'", receivedHeaders.Get("x-opencode-request"))
+	if receivedHeaders.Get("x-opencode-request") != opencode.Request {
+		t.Errorf("expected x-opencode-request '%s', got '%s'", opencode.Request, receivedHeaders.Get("x-opencode-request"))
 	}
 	sessionVal := receivedHeaders.Get("x-opencode-session")
 	if !sessionRegex.MatchString(sessionVal) {
@@ -281,7 +280,7 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 		t.Errorf("expected Authorization 'Bearer public', got '%s'", receivedHeaders.Get("Authorization"))
 	}
 
-	// 6. Verify Fingerprint tools injected into body
+	// 4. Verify Fingerprint tools injected into body
 	tools, ok := receivedBody["tools"].([]any)
 	if !ok || len(tools) < 4 {
 		t.Errorf("expected at least 4 fingerprint tools in body, got: %+v", receivedBody["tools"])
@@ -303,7 +302,7 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 		}
 	}
 
-	// 7. Test Streaming response
+	// 5. Test Streaming response
 	compPayload["stream"] = true
 	streamBytes, _ := json.Marshal(compPayload)
 	streamReq, _ := http.NewRequest("POST", routerServer.URL+"/v1/chat/completions", bytes.NewReader(streamBytes))
@@ -336,10 +335,10 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	ks, _ := NewKeyStore(tempDir)
+	ks, _ := store.NewKeyStore(tempDir)
 	key, _ := ks.Create("Live Test Key", "sk-live-key")
 
-	server := httptest.NewServer(setupRoutes(ks))
+	server := httptest.NewServer(handler.NewRouter(ks, nil))
 	defer server.Close()
 
 	payload := map[string]any{
@@ -384,8 +383,9 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 
 // Test /v1/models endpoint
 func TestOpenCodeModelsEndpoint(t *testing.T) {
+	compH := handler.NewCompletionHandler(nil, nil)
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/models", handleOpenCodeModels)
+	mux.HandleFunc("GET /v1/models", compH.Models)
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
