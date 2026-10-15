@@ -8,7 +8,7 @@
 
 	interface Props {
 		error: string | null;
-		activeView: 'home' | 'opencode';
+		activeView: 'home' | 'opencode' | 'antigravity';
 		onToggleMobileMenu?: () => void;
 	}
 
@@ -47,6 +47,10 @@
 				<ChevronRightIcon class="size-3 text-muted-foreground/60" />
 				{#if activeView === 'home'}
 					<span class="font-semibold text-foreground">Home</span>
+				{:else if activeView === 'antigravity'}
+					<span class="text-muted-foreground">Providers</span>
+					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
+					<span class="font-semibold text-foreground">Google Antigravity</span>
 				{:else}
 					<span class="text-muted-foreground">Providers</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
@@ -70,7 +74,7 @@
 						error ? 'font-medium text-destructive' : 'text-foreground'
 					)}
 				>
-					{error ? 'offline' : 'Go :8080'}
+					{error ? 'offline' : 'Go :20128'}
 				</span>
 			</div>
 

@@ -6,15 +6,16 @@ import (
 	"net/http"
 	"strings"
 
+	"lun-router/internal/antigravity"
 	"lun-router/internal/opencode"
 	"lun-router/internal/store"
 )
 
-func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, staticFS ...fs.FS) http.Handler {
+func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, staticFS ...fs.FS) http.Handler {
 	mux := http.NewServeMux()
 
 	keyH := NewKeyHandler(ks)
-	compH := NewCompletionHandler(ks, ms, client)
+	compH := NewCompletionHandler(ks, ms, client, agClient)
 
 	// API Keys Management
 	mux.HandleFunc("GET /api/health", keyH.Health)
@@ -36,6 +37,21 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	mux.HandleFunc("PUT /api/providers/opencode/models", compH.UpdateProviderModels)
 	mux.HandleFunc("POST /api/providers/opencode/version/refresh", compH.RefreshVersion)
 	mux.HandleFunc("POST /api/models/test", compH.TestModel)
+
+	// Antigravity Provider Routes (9router parity)
+	if agClient != nil {
+		agH := NewAntigravityHandler(agClient, ms)
+		mux.HandleFunc("GET /api/providers/antigravity/accounts", agH.ListAccounts)
+		mux.HandleFunc("POST /api/providers/antigravity/accounts", agH.CreateAccount)
+		mux.HandleFunc("PUT /api/providers/antigravity/accounts/{id}", agH.UpdateAccount)
+		mux.HandleFunc("DELETE /api/providers/antigravity/accounts/{id}", agH.DeleteAccount)
+		mux.HandleFunc("POST /api/providers/antigravity/accounts/{id}/refresh", agH.RefreshAccount)
+		mux.HandleFunc("GET /api/providers/antigravity/oauth/auth-url", agH.GetOAuthURL)
+		mux.HandleFunc("GET /api/providers/antigravity/models", agH.ListModels)
+		mux.HandleFunc("PUT /api/providers/antigravity/models", agH.UpdateModels)
+		mux.HandleFunc("GET /api/providers/antigravity/accounts/{id}/quota", agH.GetAccountQuota)
+		mux.HandleFunc("GET /api/providers/antigravity/quota", agH.GetAllQuotas)
+	}
 
 	if len(staticFS) > 0 && staticFS[0] != nil {
 		mux.Handle("/", spaHandler(staticFS[0]))

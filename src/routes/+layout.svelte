@@ -5,6 +5,7 @@
 	import { page } from '$app/state';
 	import { keysState } from '$lib/state/keys.svelte';
 	import { providerState } from '$lib/state/provider.svelte';
+	import { antigravityState } from '$lib/state/antigravity.svelte';
 	import Sidebar from '$lib/components/sidebar/sidebar.svelte';
 	import Navbar from '$lib/components/navbar/navbar.svelte';
 	import * as Alert from '$lib/components/ui/alert';
@@ -18,13 +19,18 @@
 
 	let mobileMenuOpen = $state(false);
 
-	const activeView = $derived<'home' | 'opencode'>(
-		page.url.pathname.startsWith('/opencode') ? 'opencode' : 'home'
+	const activeView = $derived<'home' | 'opencode' | 'antigravity'>(
+		page.url.pathname.startsWith('/antigravity')
+			? 'antigravity'
+			: page.url.pathname.startsWith('/opencode')
+				? 'opencode'
+				: 'home'
 	);
 
 	onMount(() => {
 		keysState.load();
 		providerState.load();
+		antigravityState.load();
 	});
 </script>
 
@@ -39,6 +45,9 @@
 		totalKeys={keysState.totalCount}
 		enabledModels={providerState.enabledCount}
 		totalModels={providerState.totalCount}
+		antigravityAccounts={antigravityState.activeAccountsCount}
+		antigravityEnabledModels={antigravityState.enabledCount}
+		antigravityTotalModels={antigravityState.totalCount}
 		mobileOpen={mobileMenuOpen}
 		onCloseMobile={() => (mobileMenuOpen = false)}
 	/>

@@ -29,3 +29,33 @@ export interface ProviderModel {
 	owned_by?: string;
 	enabled: boolean;
 }
+
+export interface AntigravityAccount {
+	id: string;
+	email: string;
+	projectId: string;
+	accessToken?: string;
+	refreshToken?: string;
+	expiresAt?: string;
+	isActive: boolean;
+	createdAt: string;
+}
+
+export interface AntigravityQuotaItem {
+	name: string;
+	modelKey?: string;
+	used: number;
+	total: number;
+	remainingPercentage: number;
+	resetAt?: string | null;
+	unlimited?: boolean;
+}
+
+export interface AntigravityAccountUsage {
+	accountId: string;
+	email: string;
+	plan: string;
+	message?: string;
+	quotas: Record<string, AntigravityQuotaItem>;
+	fetchedAt: string;
+}

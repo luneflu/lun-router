@@ -25,7 +25,7 @@ export class KeysState {
 			this.error = null;
 			this.items = await fetchApiKeys();
 		} catch (e: unknown) {
-			this.error = e instanceof Error ? e.message : 'Go backend unreachable on :8080';
+			this.error = e instanceof Error ? e.message : 'Go backend unreachable on :20128';
 		} finally {
 			this.loading = false;
 		}

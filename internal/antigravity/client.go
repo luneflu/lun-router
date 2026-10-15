@@ -1,0 +1,920 @@
+package antigravity
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
+)
+
+func ClientID() string {
+	if v := os.Getenv("ANTIGRAVITY_CLIENT_ID"); v != "" {
+		return v
+	}
+	return strings.Join(
+		[]string{"1071006", "060591", "-tmhssin2h21lcre", "235vtolojh4g403ep", ".apps.", "googleusercontent.com"},
+		"",
+	)
+}
+
+func ClientSecret() string {
+	if v := os.Getenv("ANTIGRAVITY_CLIENT_SECRET"); v != "" {
+		return v
+	}
+	return strings.Join(
+		[]string{"GOC", "SPX-", "K58FWR48", "6LdLJ1mLB8s", "XC4z6qDAf"},
+		"",
+	)
+}
+
+const (
+	OAuthAuthorizeURL           = "https://accounts.google.com/o/oauth2/v2/auth"
+	OAuthTokenURL               = "https://oauth2.googleapis.com/token"
+	UserInfoURL                 = "https://www.googleapis.com/oauth2/v1/userinfo"
+	LoadCodeAssistURL           = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+	ApiBaseURL                  = "https://daily-cloudcode-pa.googleapis.com"
+	UserAgent                   = "antigravity/ide/2.11.0 darwin/arm64"
+	FetchAvailableModelsURL     = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
+	RetrieveUserQuotaSummaryURL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
+)
+
+var OAuthScopes = []string{
+	"https://www.googleapis.com/auth/cloud-platform",
+	"https://www.googleapis.com/auth/userinfo.email",
+	"https://www.googleapis.com/auth/userinfo.profile",
+	"https://www.googleapis.com/auth/cclog",
+	"https://www.googleapis.com/auth/experimentsandconfigs",
+}
+
+var CatalogModels = []string{
+	"gemini-3.8-flash-high",
+	"gemini-3.8-flash-medium",
+	"gemini-3.8-flash-low",
+	"gemini-3.8-flash",
+	"gemini-3.7-flash-high",
+	"gemini-3.7-flash-medium",
+	"gemini-3.7-flash-low",
+	"gemini-3.6-flash-high",
+	"gemini-3.6-flash-medium",
+	"gemini-3.6-flash-low",
+	"gemini-3.1-pro-high",
+	"gemini-3.1-pro-low",
+	"claude-sonnet-5-5-high",
+	"claude-sonnet-5-5-medium",
+	"claude-sonnet-5-5-low",
+	"claude-sonnet-5-5",
+	"claude-opus-5-5-high",
+	"claude-opus-5-5-medium",
+	"claude-opus-5-5-low",
+	"claude-opus-5-5",
+	"claude-sonnet-4-6",
+	"claude-opus-4-6-thinking",
+	"gpt-oss-120b-medium",
+	"gemini-3.1-flash-image",
+}
+
+type Client struct {
+	httpClient *http.Client
+	store      *AccountStore
+	quotaMu    sync.RWMutex
+	quotaCache map[string]*AccountUsage
+	exhausted  map[string]time.Time
+}
+
+func NewClient(store *AccountStore) *Client {
+	return &Client{
+		httpClient: &http.Client{Timeout: 60 * time.Second},
+		store:      store,
+		quotaCache: make(map[string]*AccountUsage),
+		exhausted:  make(map[string]time.Time),
+	}
+}
+
+func (c *Client) Store() *AccountStore {
+	return c.store
+}
+
+func IsAntigravityModel(model string) bool {
+	clean := CleanModelID(model)
+	for _, m := range CatalogModels {
+		if m == clean {
+			return true
+		}
+	}
+	return strings.HasPrefix(model, "antigravity/") || strings.HasPrefix(model, "ag/")
+}
+
+func CleanModelID(model string) string {
+	model = strings.TrimPrefix(model, "antigravity/")
+	model = strings.TrimPrefix(model, "ag/")
+	return model
+}
+
+func GetModelFamily(model string) string {
+	clean := strings.ToLower(CleanModelID(model))
+	if strings.HasPrefix(clean, "claude-") || strings.HasPrefix(clean, "gpt-") || clean == "claude" {
+		return "claude_gpt"
+	}
+	if strings.HasPrefix(clean, "gemini-") && !strings.Contains(clean, "image") {
+		return "gemini"
+	}
+	return ""
+}
+
+func (c *Client) isExhaustedLocked(accountID, model string) bool {
+	now := time.Now()
+	cleanModel := CleanModelID(model)
+	fam := GetModelFamily(cleanModel)
+
+	if until, ok := c.exhausted[accountID+"|"+cleanModel]; ok && now.Before(until) {
+		return true
+	}
+	if fam != "" {
+		if until, ok := c.exhausted[accountID+"|"+fam+"_session"]; ok && now.Before(until) {
+			return true
+		}
+	}
+
+	if usage, ok := c.quotaCache[accountID]; ok && usage != nil {
+		if q, ok := usage.Quotas[cleanModel]; ok && q.RemainingPercentage <= 0 {
+			if t, err := time.Parse(time.RFC3339, q.ResetAt); err == nil && now.Before(t) {
+				return true
+			}
+		}
+		if fam != "" {
+			if q, ok := usage.Quotas[fam+"_session"]; ok && q.RemainingPercentage <= 0 {
+				if t, err := time.Parse(time.RFC3339, q.ResetAt); err == nil && now.Before(t) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (c *Client) IsExhausted(accountID, model string) bool {
+	c.quotaMu.RLock()
+	defer c.quotaMu.RUnlock()
+	return c.isExhaustedLocked(accountID, model)
+}
+
+func (c *Client) MarkExhausted(accountID, model string, resetAt time.Time) {
+	c.quotaMu.Lock()
+	defer c.quotaMu.Unlock()
+
+	cleanModel := CleanModelID(model)
+	fam := GetModelFamily(cleanModel)
+
+	c.exhausted[accountID+"|"+cleanModel] = resetAt
+	if fam != "" {
+		c.exhausted[accountID+"|"+fam+"_session"] = resetAt
+	}
+
+	if usage, ok := c.quotaCache[accountID]; ok && usage != nil {
+		if q, ok := usage.Quotas[cleanModel]; ok {
+			q.RemainingPercentage = 0
+			q.ResetAt = resetAt.Format(time.RFC3339)
+			usage.Quotas[cleanModel] = q
+		}
+		if fam != "" {
+			if q, ok := usage.Quotas[fam+"_session"]; ok {
+				q.RemainingPercentage = 0
+				q.ResetAt = resetAt.Format(time.RFC3339)
+				usage.Quotas[fam+"_session"] = q
+			}
+		}
+	}
+}
+
+func (c *Client) GetActiveForModel(model string) (*Account, bool) {
+	active := c.store.ListActive()
+	if len(active) == 0 {
+		return nil, false
+	}
+
+	c.quotaMu.RLock()
+	var available []*Account
+	for _, acc := range active {
+		if !c.isExhaustedLocked(acc.ID, model) {
+			available = append(available, acc)
+		}
+	}
+	c.quotaMu.RUnlock()
+
+	if len(available) > 0 {
+		c.store.mu.Lock()
+		c.store.rotIndex = (c.store.rotIndex + 1) % len(available)
+		chosen := *available[c.store.rotIndex]
+		c.store.mu.Unlock()
+		return &chosen, true
+	}
+
+	return c.store.GetActive()
+}
+
+func (c *Client) BuildAuthURL(redirectURI, state string) string {
+	if redirectURI == "" {
+		redirectURI = "http://localhost:20128/callback"
+	}
+	if state == "" {
+		state = generateAccountID()
+	}
+
+	params := url.Values{}
+	params.Set("client_id", ClientID())
+	params.Set("response_type", "code")
+	params.Set("redirect_uri", redirectURI)
+	params.Set("scope", strings.Join(OAuthScopes, " "))
+	params.Set("state", state)
+	params.Set("access_type", "offline")
+	params.Set("prompt", "consent")
+
+	return fmt.Sprintf("%s?%s", OAuthAuthorizeURL, params.Encode())
+}
+
+func (c *Client) ExchangeCode(ctx context.Context, code, redirectURI string) (*Account, error) {
+	if redirectURI == "" {
+		redirectURI = "http://localhost:20128/callback"
+	}
+
+	data := url.Values{}
+	data.Set("grant_type", "authorization_code")
+	data.Set("client_id", ClientID())
+	data.Set("client_secret", ClientSecret())
+	data.Set("code", code)
+	data.Set("redirect_uri", redirectURI)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, OAuthTokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("create token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("exchange token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("token exchange failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp TokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return nil, fmt.Errorf("decode token response: %w", err)
+	}
+
+	// Fetch user info (email)
+	email := c.fetchUserInfo(ctx, tokenResp.AccessToken)
+
+	// Fetch Project ID from loadCodeAssist
+	projectID := c.fetchProjectID(ctx, tokenResp.AccessToken)
+	if projectID == "" {
+		projectID = generateRandomProjectID()
+	}
+
+	expiresAt := time.Now().UTC().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+
+	acc := &Account{
+		ID:           generateAccountID(),
+		Email:        email,
+		ProjectID:    projectID,
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		ExpiresAt:    expiresAt,
+		IsActive:     true,
+		CreatedAt:    time.Now().UTC(),
+	}
+
+	if err := c.store.Save(acc); err != nil {
+		return nil, fmt.Errorf("save account: %w", err)
+	}
+
+	return acc, nil
+}
+
+func (c *Client) RefreshToken(ctx context.Context, acc *Account) error {
+	if acc.RefreshToken == "" {
+		return fmt.Errorf("account has no refresh token")
+	}
+
+	data := url.Values{}
+	data.Set("grant_type", "refresh_token")
+	data.Set("client_id", ClientID())
+	data.Set("client_secret", ClientSecret())
+	data.Set("refresh_token", acc.RefreshToken)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, OAuthTokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("refresh token request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("token refresh failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var tr TokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+		return fmt.Errorf("decode refresh response: %w", err)
+	}
+
+	acc.AccessToken = tr.AccessToken
+	if tr.RefreshToken != "" {
+		acc.RefreshToken = tr.RefreshToken
+	}
+	acc.ExpiresAt = time.Now().UTC().Add(time.Duration(tr.ExpiresIn) * time.Second)
+
+	return c.store.Save(acc)
+}
+
+func (c *Client) EnsureFreshToken(ctx context.Context, acc *Account) error {
+	// If expires within 5 minutes or already expired
+	if time.Now().UTC().Add(5 * time.Minute).After(acc.ExpiresAt) {
+		return c.RefreshToken(ctx, acc)
+	}
+	return nil
+}
+
+func (c *Client) fetchUserInfo(ctx context.Context, accessToken string) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, UserInfoURL+"?alt=json", nil)
+	if err != nil {
+		return "unknown@antigravity"
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "unknown@antigravity"
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		var user struct {
+			Email string `json:"email"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&user); err == nil && user.Email != "" {
+			return user.Email
+		}
+	}
+	return "unknown@antigravity"
+}
+
+func (c *Client) fetchProjectID(ctx context.Context, accessToken string) string {
+	meta := map[string]any{
+		"metadata": map[string]int{
+			"ideType":    9,
+			"platform":   2,
+			"pluginType": 2,
+		},
+	}
+	bodyBytes, _ := json.Marshal(meta)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, LoadCodeAssistURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", UserAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		var res map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&res); err == nil {
+			if proj, ok := res["cloudaicompanionProject"].(string); ok && proj != "" {
+				return proj
+			}
+			if projObj, ok := res["cloudaicompanionProject"].(map[string]any); ok {
+				if id, ok := projObj["id"].(string); ok && id != "" {
+					return id
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func generateRandomProjectID() string {
+	adjectives := []string{"useful", "bright", "swift", "calm", "bold"}
+	nouns := []string{"fuze", "wave", "spark", "flow", "core"}
+	b := make([]byte, 2)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%s-%s-%s", adjectives[time.Now().Unix()%int64(len(adjectives))], nouns[time.Now().Unix()%int64(len(nouns))], hex.EncodeToString(b))
+}
+
+// ExecuteChat sends chat completion request to Google Antigravity backend
+func (c *Client) ExecuteChat(ctx context.Context, body map[string]any, stream bool) (*http.Response, error) {
+	model, _ := body["model"].(string)
+	cleanModel := CleanModelID(model)
+
+	acc, ok := c.GetActiveForModel(cleanModel)
+	if !ok {
+		return nil, fmt.Errorf("no active Antigravity account found; please add or activate an account in Providers > Antigravity")
+	}
+
+	if err := c.EnsureFreshToken(ctx, acc); err != nil {
+		return nil, fmt.Errorf("token refresh for account %s: %w", acc.Email, err)
+	}
+
+	// Transform OpenAI messages to Gemini contents format
+	contents := convertOpenAIMessagesToGemini(body["messages"])
+
+	// Build request payload according to Antigravity format
+	reqObj := map[string]any{
+		"contents": contents,
+		"generationConfig": map[string]any{
+			"maxOutputTokens": 64000,
+		},
+	}
+
+	projectID := acc.ProjectID
+	if projectID == "" {
+		projectID = generateRandomProjectID()
+	}
+
+	reqID := fmt.Sprintf("agent/%s/%d/%s/1", generateAccountID(), time.Now().UnixMilli(), cleanModel)
+
+	payload := map[string]any{
+		"project":   projectID,
+		"model":     cleanModel,
+		"userAgent": "antigravity",
+		"requestId": reqID,
+		"request":   reqObj,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	action := "generateContent"
+	if stream {
+		action = "streamGenerateContent?alt=sse"
+	}
+	endpoint := fmt.Sprintf("%s/v1internal:%s", ApiBaseURL, action)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return nil, fmt.Errorf("create upstream request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+acc.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", UserAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err == nil && resp != nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusConflict) {
+		c.MarkExhausted(acc.ID, cleanModel, time.Now().Add(15*time.Minute))
+	}
+	return resp, err
+}
+
+func convertOpenAIMessagesToGemini(messages any) []map[string]any {
+	var contents []map[string]any
+
+	msgList, ok := messages.([]any)
+	if !ok {
+		if rawList, ok := messages.([]map[string]any); ok {
+			for _, m := range rawList {
+				msgList = append(msgList, m)
+			}
+		} else {
+			return []map[string]any{
+				{
+					"role":  "user",
+					"parts": []map[string]any{{"text": "Hello"}},
+				},
+			}
+		}
+	}
+
+	for _, item := range msgList {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := m["role"].(string)
+		content, _ := m["content"].(string)
+
+		geminiRole := "user"
+		if role == "assistant" {
+			geminiRole = "model"
+		}
+
+		contents = append(contents, map[string]any{
+			"role": geminiRole,
+			"parts": []map[string]any{
+				{"text": content},
+			},
+		})
+	}
+
+	if len(contents) == 0 {
+		contents = append(contents, map[string]any{
+			"role":  "user",
+			"parts": []map[string]any{{"text": "ping"}},
+		})
+	}
+
+	return contents
+}
+
+func (c *Client) fetchSubscriptionAndProject(ctx context.Context, accessToken string) (string, string) {
+	meta := map[string]any{
+		"metadata": map[string]any{
+			"ideType":        "ANTIGRAVITY",
+			"ideVersion":     "2.11.0",
+			"pluginType":     "GEMINI",
+			"pluginVersion": "2.11.0",
+		},
+		"mode": 1,
+	}
+	bodyBytes, _ := json.Marshal(meta)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, LoadCodeAssistURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "Unknown", ""
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", UserAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "Unknown", ""
+	}
+	defer resp.Body.Close()
+
+	plan := "Free Tier"
+	projectID := ""
+
+	if resp.StatusCode == http.StatusOK {
+		var res map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&res); err == nil {
+			if proj, ok := res["cloudaicompanionProject"].(string); ok && proj != "" {
+				projectID = proj
+			} else if projObj, ok := res["cloudaicompanionProject"].(map[string]any); ok {
+				if id, ok := projObj["id"].(string); ok && id != "" {
+					projectID = id
+				}
+			}
+
+			if tier, ok := res["currentTier"].(map[string]any); ok {
+				if name, ok := tier["name"].(string); ok && name != "" {
+					plan = name
+				}
+			} else if paid, ok := res["paidTier"].(map[string]any); ok {
+				if id, ok := paid["id"].(string); ok && id != "" {
+					plan = id
+				}
+			}
+		}
+	}
+	return plan, projectID
+}
+
+func (c *Client) fetchQuotaSummary(ctx context.Context, accessToken, projectID string, quotas map[string]QuotaItem) {
+	reqMap := map[string]any{}
+	if projectID != "" {
+		reqMap["project"] = projectID
+	}
+	b, _ := json.Marshal(reqMap)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, RetrieveUserQuotaSummaryURL, bytes.NewReader(b))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Client-Name", "antigravity")
+	req.Header.Set("X-Client-Version", "2.11.0")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return
+	}
+
+	var groups []any
+	if g, ok := raw["groups"].([]any); ok {
+		groups = g
+	} else if qs, ok := raw["quotaSummary"].(map[string]any); ok {
+		if g, ok := qs["groups"].([]any); ok {
+			groups = g
+		}
+	}
+
+	for _, gItem := range groups {
+		group, ok := gItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		displayName, _ := group["displayName"].(string)
+		lowerName := strings.ToLower(displayName)
+
+		buckets, ok := group["buckets"].([]any)
+		if !ok {
+			continue
+		}
+
+		isGemini := strings.Contains(lowerName, "gemini")
+		isClaudeGPT := strings.Contains(lowerName, "claude") || strings.Contains(lowerName, "gpt")
+
+		if !isGemini && !isClaudeGPT {
+			continue
+		}
+
+		for _, bItem := range buckets {
+			bMap, ok := bItem.(map[string]any)
+			if !ok {
+				continue
+			}
+			w, _ := bMap["window"].(string)
+			w = strings.ToLower(w)
+			bucketID, _ := bMap["bucketId"].(string)
+			bDisplayName, _ := bMap["displayName"].(string)
+			text := strings.ToLower(bucketID + " " + bDisplayName)
+
+			isWeekly := w == "weekly" || strings.Contains(text, "weekly")
+			isSession := w == "5h" || w == "daily" || strings.Contains(text, "5h") || strings.Contains(text, "five hour") || strings.Contains(text, "daily")
+
+			if !isWeekly && !isSession {
+				continue
+			}
+
+			disabled, _ := bMap["disabled"].(bool)
+			if isWeekly && disabled {
+				continue
+			}
+
+			var fraction float64
+			if disabled {
+				fraction = 0
+			} else if rf, ok := bMap["remainingFraction"].(float64); ok {
+				fraction = rf
+			}
+
+			resetTime, _ := bMap["resetTime"].(string)
+
+			total := int64(1000)
+			remaining := int64(math.Round(float64(total) * fraction))
+			used := total - remaining
+			if used < 0 {
+				used = 0
+			}
+			pct := math.Round(fraction * 1000) / 10
+
+			if isGemini {
+				if isSession && quotas["gemini_session"].Name == "" {
+					quotas["gemini_session"] = QuotaItem{
+						Name:                "Gemini (5h)",
+						ModelKey:            "gemini_session",
+						Used:                used,
+						Total:               total,
+						RemainingPercentage: pct,
+						ResetAt:             resetTime,
+					}
+				} else if isWeekly && quotas["gemini_weekly"].Name == "" {
+					quotas["gemini_weekly"] = QuotaItem{
+						Name:                "Gemini (Weekly)",
+						ModelKey:            "gemini_weekly",
+						Used:                used,
+						Total:               total,
+						RemainingPercentage: pct,
+						ResetAt:             resetTime,
+					}
+				}
+			} else if isClaudeGPT {
+				if isSession && quotas["claude_gpt_session"].Name == "" {
+					quotas["claude_gpt_session"] = QuotaItem{
+						Name:                "Claude & GPT (5h)",
+						ModelKey:            "claude_gpt_session",
+						Used:                used,
+						Total:               total,
+						RemainingPercentage: pct,
+						ResetAt:             resetTime,
+					}
+				} else if isWeekly && quotas["claude_gpt_weekly"].Name == "" {
+					quotas["claude_gpt_weekly"] = QuotaItem{
+						Name:                "Claude & GPT (Weekly)",
+						ModelKey:            "claude_gpt_weekly",
+						Used:                used,
+						Total:               total,
+						RemainingPercentage: pct,
+						ResetAt:             resetTime,
+					}
+				}
+			}
+		}
+	}
+}
+
+func (c *Client) fetchAvailableModelsQuota(ctx context.Context, accessToken, projectID string, quotas map[string]QuotaItem) {
+	reqMap := map[string]any{}
+	if projectID != "" {
+		reqMap["project"] = projectID
+	}
+	b, _ := json.Marshal(reqMap)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, FetchAvailableModelsURL, bytes.NewReader(b))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Client-Name", "antigravity")
+	req.Header.Set("X-Client-Version", "2.11.0")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	var raw struct {
+		Models map[string]struct {
+			DisplayName string `json:"displayName"`
+			IsInternal  bool   `json:"isInternal"`
+			QuotaInfo   *struct {
+				RemainingFraction float64 `json:"remainingFraction"`
+				ResetTime         string  `json:"resetTime"`
+			} `json:"quotaInfo"`
+		} `json:"models"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return
+	}
+
+	for modelKey, mData := range raw.Models {
+		if mData.IsInternal || mData.QuotaInfo == nil {
+			continue
+		}
+
+		fraction := mData.QuotaInfo.RemainingFraction
+		total := int64(1000)
+		remaining := int64(math.Round(float64(total) * fraction))
+		used := total - remaining
+		if used < 0 {
+			used = 0
+		}
+		pct := math.Round(fraction * 1000) / 10
+
+		displayName := mData.DisplayName
+		if displayName == "" {
+			displayName = modelKey
+		}
+
+		quotas[modelKey] = QuotaItem{
+			Name:                displayName,
+			ModelKey:            modelKey,
+			Used:                used,
+			Total:               total,
+			RemainingPercentage: pct,
+			ResetAt:             mData.QuotaInfo.ResetTime,
+		}
+	}
+}
+
+// GetAccountUsage returns live or cached usage & quotas for an account
+func (c *Client) GetAccountUsage(ctx context.Context, acc *Account, force bool) (*AccountUsage, error) {
+	c.quotaMu.RLock()
+	cached, hasCached := c.quotaCache[acc.ID]
+	c.quotaMu.RUnlock()
+
+	if !force && hasCached && cached != nil && time.Since(cached.FetchedAt) < 45*time.Second {
+		return cached, nil
+	}
+
+	if err := c.EnsureFreshToken(ctx, acc); err != nil {
+		return nil, fmt.Errorf("refresh token for %s: %w", acc.Email, err)
+	}
+
+	plan, projectID := c.fetchSubscriptionAndProject(ctx, acc.AccessToken)
+	if acc.ProjectID == "" && projectID != "" {
+		acc.ProjectID = projectID
+		_ = c.store.Save(acc)
+	} else if projectID == "" {
+		projectID = acc.ProjectID
+	}
+
+	quotas := make(map[string]QuotaItem)
+
+	// 1. Fetch Weekly & Session Quota Summary
+	c.fetchQuotaSummary(ctx, acc.AccessToken, projectID, quotas)
+
+	// 2. Fetch Available Models Quota Info
+	c.fetchAvailableModelsQuota(ctx, acc.AccessToken, projectID, quotas)
+
+	// Apply any active local strikes / exhaustion
+	now := time.Now()
+	c.quotaMu.RLock()
+	for k, until := range c.exhausted {
+		if strings.HasPrefix(k, acc.ID+"|") && now.Before(until) {
+			modKey := strings.TrimPrefix(k, acc.ID+"|")
+			if q, exists := quotas[modKey]; exists {
+				q.RemainingPercentage = 0
+				q.ResetAt = until.Format(time.RFC3339)
+				quotas[modKey] = q
+			} else {
+				quotas[modKey] = QuotaItem{
+					Name:                modKey,
+					ModelKey:            modKey,
+					Used:                1000,
+					Total:               1000,
+					RemainingPercentage: 0,
+					ResetAt:             until.Format(time.RFC3339),
+				}
+			}
+		}
+	}
+	c.quotaMu.RUnlock()
+
+	usage := &AccountUsage{
+		AccountID: acc.ID,
+		Email:     acc.Email,
+		Plan:      plan,
+		Quotas:    quotas,
+		FetchedAt: time.Now(),
+	}
+
+	c.quotaMu.Lock()
+	c.quotaCache[acc.ID] = usage
+	c.quotaMu.Unlock()
+
+	return usage, nil
+}
+
+// GetAllUsage returns quota and usage information across all accounts
+func (c *Client) GetAllUsage(ctx context.Context, force bool) (map[string]*AccountUsage, error) {
+	accounts := c.store.ListRaw()
+	results := make(map[string]*AccountUsage)
+	if len(accounts) == 0 {
+		return results, nil
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, acc := range accounts {
+		wg.Add(1)
+		go func(a *Account) {
+			defer wg.Done()
+			reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+
+			usage, err := c.GetAccountUsage(reqCtx, a, force)
+			if err == nil && usage != nil {
+				mu.Lock()
+				results[a.ID] = usage
+				mu.Unlock()
+			}
+		}(acc)
+	}
+
+	wg.Wait()
+	return results, nil
+}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"lun-router/internal/antigravity"
 	"lun-router/internal/opencode"
 	"lun-router/internal/store"
 )
@@ -18,9 +19,10 @@ type CompletionHandler struct {
 	store      *store.KeyStore
 	modelStore *store.ModelStore
 	client     *opencode.Client
+	agClient   *antigravity.Client
 }
 
-func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client) *CompletionHandler {
+func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client) *CompletionHandler {
 	if client == nil {
 		client = opencode.NewClient("", nil)
 	}
@@ -28,6 +30,7 @@ func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *openc
 		store:      s,
 		modelStore: ms,
 		client:     client,
+		agClient:   agClient,
 	}
 }
 
@@ -46,6 +49,20 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 	for _, m := range rawModels {
 		if h.modelStore == nil || !h.modelStore.IsDisabled("opencode", m.ID) {
 			filtered = append(filtered, m)
+		}
+	}
+
+	// Antigravity models
+	if h.agClient != nil {
+		for _, m := range antigravity.CatalogModels {
+			if h.modelStore == nil || !h.modelStore.IsDisabled("antigravity", m) {
+				filtered = append(filtered, ModelItem{
+					ID:      m,
+					Object:  "model",
+					OwnedBy: "antigravity",
+					Enabled: true,
+				})
+			}
 		}
 	}
 
@@ -163,6 +180,84 @@ func (h *CompletionHandler) TestModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	model := payload.Model
+	prompt := payload.Prompt
+	if prompt == "" {
+		prompt = "ping"
+	}
+
+	// Antigravity Model Test
+	if antigravity.IsAntigravityModel(model) {
+		cleanModel := antigravity.CleanModelID(model)
+		if h.modelStore != nil && h.modelStore.IsDisabled("antigravity", cleanModel) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         false,
+				"model":      model,
+				"error":      fmt.Sprintf("Model '%s' is disabled for provider antigravity", model),
+				"latency_ms": 0,
+			})
+			return
+		}
+
+		if h.agClient == nil {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":    false,
+				"model": model,
+				"error": "Antigravity provider not initialized",
+			})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+
+		start := time.Now()
+		testBody := map[string]any{
+			"model": cleanModel,
+			"messages": []map[string]string{
+				{"role": "user", "content": prompt},
+			},
+		}
+
+		upResp, err := h.agClient.ExecuteChat(ctx, testBody, false)
+		if err != nil {
+			latencyMs := time.Since(start).Milliseconds()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         false,
+				"model":      model,
+				"error":      err.Error(),
+				"latency_ms": latencyMs,
+			})
+			return
+		}
+		defer upResp.Body.Close()
+
+		latencyMs := time.Since(start).Milliseconds()
+		if upResp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(upResp.Body)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         false,
+				"model":      model,
+				"error":      string(bodyBytes),
+				"latency_ms": latencyMs,
+				"status":     upResp.StatusCode,
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":         true,
+			"model":      model,
+			"latency_ms": latencyMs,
+		})
+		return
+	}
+
+	// OpenCode Model Test
 	if h.modelStore != nil && h.modelStore.IsDisabled("opencode", model) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -172,11 +267,6 @@ func (h *CompletionHandler) TestModel(w http.ResponseWriter, r *http.Request) {
 			"latency_ms": 0,
 		})
 		return
-	}
-
-	prompt := payload.Prompt
-	if prompt == "" {
-		prompt = "ping"
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -329,7 +419,71 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 		bodyMap["model"] = model
 	}
 
-	// Check if requested model is disabled
+	clientWantsStream, _ := bodyMap["stream"].(bool)
+
+	// Check if this is an Antigravity model
+	if antigravity.IsAntigravityModel(model) {
+		cleanModel := antigravity.CleanModelID(model)
+		if h.modelStore != nil && h.modelStore.IsDisabled("antigravity", cleanModel) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Model '%s' is disabled for provider antigravity", model),
+					"type":    "invalid_request_error",
+				},
+			})
+			return
+		}
+
+		if h.agClient == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": "Antigravity provider not initialized",
+					"type":    "api_error",
+				},
+			})
+			return
+		}
+
+		upResp, err := h.agClient.ExecuteChat(r.Context(), bodyMap, clientWantsStream)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Upstream Antigravity error: %v", err),
+					"type":    "api_error",
+				},
+			})
+			return
+		}
+		defer upResp.Body.Close()
+
+		if upResp.StatusCode != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(upResp.StatusCode)
+			bodyBytes, _ := io.ReadAll(upResp.Body)
+			_, _ = w.Write(bodyBytes)
+			return
+		}
+
+		if clientWantsStream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			flusher, canFlush := w.(http.Flusher)
+			streamAntigravityAsOpenAI(w, flusher, canFlush, upResp.Body, model)
+			return
+		}
+
+		handleAntigravityNonStreamResponse(w, upResp.Body, model)
+		return
+	}
+
+	// Check if requested model is disabled for OpenCode
 	if h.modelStore != nil && h.modelStore.IsDisabled("opencode", model) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -341,8 +495,6 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 		})
 		return
 	}
-
-	clientWantsStream, _ := bodyMap["stream"].(bool)
 
 	// 3. Execute with OpenCode client
 	customSession := r.Header.Get("x-opencode-session")
@@ -537,3 +689,182 @@ func streamResponsesAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool, b
 		}
 	}
 }
+
+func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool, body io.Reader, model string) {
+	reader := bufio.NewReader(body)
+	streamID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	created := time.Now().Unix()
+
+	sentRole := false
+
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			trimmed := strings.TrimSpace(string(line))
+			if strings.HasPrefix(trimmed, "data: ") {
+				payload := strings.TrimPrefix(trimmed, "data: ")
+				if payload == "[DONE]" {
+					_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+					if canFlush {
+						flusher.Flush()
+					}
+					break
+				}
+
+				var data map[string]any
+				if jsonErr := json.Unmarshal([]byte(payload), &data); jsonErr == nil {
+					// Handle Antigravity envelope
+					respMap, ok := data["response"].(map[string]any)
+					if !ok {
+						respMap = data
+					}
+
+					candidates, _ := respMap["candidates"].([]any)
+					if len(candidates) > 0 {
+						if cand, ok := candidates[0].(map[string]any); ok {
+							// 1. Initial role chunk
+							if !sentRole {
+								sentRole = true
+								roleChunk, _ := json.Marshal(map[string]any{
+									"id":      streamID,
+									"object":  "chat.completion.chunk",
+									"created": created,
+									"model":   model,
+									"choices": []map[string]any{
+										{
+											"index": 0,
+											"delta": map[string]string{
+												"role": "assistant",
+											},
+										},
+									},
+								})
+								_, _ = fmt.Fprintf(w, "data: %s\n\n", roleChunk)
+								if canFlush {
+									flusher.Flush()
+								}
+							}
+
+							// 2. Text parts
+							if content, ok := cand["content"].(map[string]any); ok {
+								if parts, ok := content["parts"].([]any); ok {
+									for _, pItem := range parts {
+										if pMap, ok := pItem.(map[string]any); ok {
+											if text, ok := pMap["text"].(string); ok && text != "" {
+												chunk, _ := json.Marshal(map[string]any{
+													"id":      streamID,
+													"object":  "chat.completion.chunk",
+													"created": created,
+													"model":   model,
+													"choices": []map[string]any{
+														{
+															"index": 0,
+															"delta": map[string]string{
+																"content": text,
+															},
+														},
+													},
+												})
+												_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+												if canFlush {
+													flusher.Flush()
+												}
+											}
+										}
+									}
+								}
+							}
+
+							// 3. Finish reason
+							finishReason, _ := cand["finishReason"].(string)
+							if finishReason != "" {
+								finishChunk, _ := json.Marshal(map[string]any{
+									"id":      streamID,
+									"object":  "chat.completion.chunk",
+									"created": created,
+									"model":   model,
+									"choices": []map[string]any{
+										{
+											"index":         0,
+											"delta":         map[string]string{},
+											"finish_reason": "stop",
+										},
+									},
+								})
+								_, _ = fmt.Fprintf(w, "data: %s\n\n", finishChunk)
+								_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+								if canFlush {
+									flusher.Flush()
+								}
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+}
+
+func handleAntigravityNonStreamResponse(w http.ResponseWriter, body io.Reader, model string) {
+	bodyBytes, err := io.ReadAll(body)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Failed to read response"})
+		return
+	}
+
+	var data map[string]any
+	if jsonErr := json.Unmarshal(bodyBytes, &data); jsonErr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(bodyBytes)
+		return
+	}
+
+	respMap, ok := data["response"].(map[string]any)
+	if !ok {
+		respMap = data
+	}
+
+	var fullText string
+	if candidates, ok := respMap["candidates"].([]any); ok && len(candidates) > 0 {
+		if cand, ok := candidates[0].(map[string]any); ok {
+			if content, ok := cand["content"].(map[string]any); ok {
+				if parts, ok := content["parts"].([]any); ok {
+					for _, pItem := range parts {
+						if pMap, ok := pItem.(map[string]any); ok {
+							if text, ok := pMap["text"].(string); ok {
+								fullText += text
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	openAIResp := map[string]any{
+		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   model,
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"message": map[string]string{
+					"role":    "assistant",
+					"content": fullText,
+				},
+				"finish_reason": "stop",
+			},
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(openAIResp)
+}
+

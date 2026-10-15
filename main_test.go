@@ -16,6 +16,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"lun-router/internal/antigravity"
 	"lun-router/internal/handler"
 	"lun-router/internal/model"
 	"lun-router/internal/opencode"
@@ -39,7 +40,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 		t.Fatalf("NewModelStore: %v", err)
 	}
 
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -211,7 +212,7 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 
 	ms, _ := store.NewModelStore(tempDir)
 	mockClient := opencode.NewClient(mockUpstream.URL, nil)
-	routerServer := httptest.NewServer(handler.NewRouter(ks, ms, mockClient))
+	routerServer := httptest.NewServer(handler.NewRouter(ks, ms, mockClient, nil))
 	defer routerServer.Close()
 
 	client := routerServer.Client()
@@ -353,7 +354,7 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 	key, _ := ks.Create("Live Test Key", "sk-live-key")
 
 	ms, _ := store.NewModelStore(tempDir)
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil))
 	defer server.Close()
 
 	payload := map[string]any{
@@ -402,7 +403,7 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 
 // Test /v1/models endpoint
 func TestOpenCodeModelsEndpoint(t *testing.T) {
-	compH := handler.NewCompletionHandler(nil, nil, nil)
+	compH := handler.NewCompletionHandler(nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/models", compH.Models)
 	server := httptest.NewServer(mux)
@@ -442,7 +443,7 @@ func TestOpenCodeModelEnableDisable(t *testing.T) {
 	ms, _ := store.NewModelStore(tempDir)
 	key, _ := ks.Create("Admin Key", "sk-test-admin-key")
 
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -610,7 +611,7 @@ func TestOpenCodeSessionRotationOnRateLimit(t *testing.T) {
 	key, _ := ks.Create("Rate Limit Test Key", "sk-ratelimit-key-1")
 
 	client := opencode.NewClient(mockUpstream.URL, nil)
-	router := handler.NewRouter(ks, ms, client)
+	router := handler.NewRouter(ks, ms, client, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -706,7 +707,7 @@ func TestOpenCodeModelTestPing(t *testing.T) {
 	ms, _ := store.NewModelStore(tempDir)
 	client := opencode.NewClient(mockUpstream.URL, nil)
 
-	router := handler.NewRouter(ks, ms, client)
+	router := handler.NewRouter(ks, ms, client, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -783,7 +784,7 @@ func TestOpenCodeVersionManager(t *testing.T) {
 	ks, _ := store.NewKeyStore(tempDir)
 	ms, _ := store.NewModelStore(tempDir)
 	client := opencode.NewClient("", vm2)
-	router := handler.NewRouter(ks, ms, client)
+	router := handler.NewRouter(ks, ms, client, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -813,7 +814,7 @@ func TestSPAStaticServing(t *testing.T) {
 		},
 	}
 
-	router := handler.NewRouter(nil, nil, nil, mockFS)
+	router := handler.NewRouter(nil, nil, nil, nil, mockFS)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -953,7 +954,7 @@ func TestResponsesStreamTranslation(t *testing.T) {
 	defer upstream.Close()
 
 	client := opencode.NewClient(upstream.URL, nil)
-	router := handler.NewRouter(nil, nil, client)
+	router := handler.NewRouter(nil, nil, client, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1007,4 +1008,222 @@ func TestResponsesStreamTranslation(t *testing.T) {
 	if len(chunks) == 0 || chunks[len(chunks)-1] != "[DONE]" {
 		t.Errorf("expected [DONE] at the end, chunks=%v", chunks)
 	}
+}
+
+func TestAntigravityAccountsAndProvider(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-antigravity-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	agStore, _ := antigravity.NewAccountStore(tempDir)
+	agClient := antigravity.NewClient(agStore)
+
+	router := handler.NewRouter(ks, ms, nil, agClient)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := server.Client()
+
+	// 1. Initial accounts should be empty
+	resp, err := client.Get(server.URL + "/api/providers/antigravity/accounts")
+	if err != nil {
+		t.Fatalf("GET accounts: %v", err)
+	}
+	var listResp struct {
+		Accounts []antigravity.Account `json:"accounts"`
+		Count    int                   `json:"count"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&listResp)
+	resp.Body.Close()
+	if listResp.Count != 0 {
+		t.Errorf("expected 0 accounts initially, got %d", listResp.Count)
+	}
+
+	// 2. Add an account manually (token/credential paste)
+	addPayload, _ := json.Marshal(map[string]string{
+		"email":        "test-user@gmail.com",
+		"projectId":    "cloudaicompanion-test-123",
+		"accessToken":  "ya29.fake-access-token",
+		"refreshToken": "1//fake-refresh-token",
+	})
+	resp, err = client.Post(server.URL+"/api/providers/antigravity/accounts", "application/json", bytes.NewReader(addPayload))
+	if err != nil {
+		t.Fatalf("POST account: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
+	}
+	var createdAcc antigravity.Account
+	_ = json.NewDecoder(resp.Body).Decode(&createdAcc)
+	resp.Body.Close()
+
+	if createdAcc.Email != "test-user@gmail.com" {
+		t.Errorf("expected email 'test-user@gmail.com', got '%s'", createdAcc.Email)
+	}
+	if createdAcc.ProjectID != "cloudaicompanion-test-123" {
+		t.Errorf("expected projectId 'cloudaicompanion-test-123', got '%s'", createdAcc.ProjectID)
+	}
+	if !createdAcc.IsActive {
+		t.Errorf("expected newly created account to be active")
+	}
+
+	// 3. List accounts and verify masking
+	resp, _ = client.Get(server.URL + "/api/providers/antigravity/accounts")
+	_ = json.NewDecoder(resp.Body).Decode(&listResp)
+	resp.Body.Close()
+	if listResp.Count != 1 {
+		t.Errorf("expected 1 account in list, got %d", listResp.Count)
+	}
+
+	// 4. Toggle account active state
+	togglePayload, _ := json.Marshal(map[string]bool{"isActive": false})
+	req, _ := http.NewRequest("PUT", server.URL+"/api/providers/antigravity/accounts/"+createdAcc.ID, bytes.NewReader(togglePayload))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("toggle account: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK for toggle, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	acc, ok := agStore.Get(createdAcc.ID)
+	if !ok || acc.IsActive {
+		t.Errorf("expected account to be inactive in store")
+	}
+
+	// 5. Test OAuth Auth URL generation
+	resp, err = client.Get(server.URL + "/api/providers/antigravity/oauth/auth-url")
+	if err != nil {
+		t.Fatalf("GET auth-url: %v", err)
+	}
+	var oauthResp struct {
+		AuthURL  string `json:"authUrl"`
+		ClientID string `json:"clientId"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&oauthResp)
+	resp.Body.Close()
+	if !strings.Contains(oauthResp.AuthURL, "accounts.google.com") || oauthResp.ClientID != antigravity.ClientID() {
+		t.Errorf("unexpected oauth authUrl: %+v", oauthResp)
+	}
+
+	// 6. Test Antigravity Models list
+	resp, err = client.Get(server.URL + "/api/providers/antigravity/models")
+	if err != nil {
+		t.Fatalf("GET models: %v", err)
+	}
+	var modelsResp struct {
+		Provider string              `json:"provider"`
+		Models   []handler.ModelItem `json:"models"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&modelsResp)
+	resp.Body.Close()
+	if modelsResp.Provider != "antigravity" || len(modelsResp.Models) == 0 {
+		t.Errorf("unexpected models response: %+v", modelsResp)
+	}
+
+	// 7. Toggle Antigravity model enabled state
+	modelTogglePayload, _ := json.Marshal(map[string]any{
+		"model":   "gemini-3.8-flash",
+		"enabled": false,
+	})
+	req, _ = http.NewRequest("PUT", server.URL+"/api/providers/antigravity/models", bytes.NewReader(modelTogglePayload))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ = client.Do(req)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for model disable, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if !ms.IsDisabled("antigravity", "gemini-3.8-flash") {
+		t.Errorf("expected gemini-3.8-flash to be disabled in modelStore")
+	}
+
+	// 8. Delete account
+	req, _ = http.NewRequest("DELETE", server.URL+"/api/providers/antigravity/accounts/"+createdAcc.ID, nil)
+	resp, _ = client.Do(req)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for delete, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if _, ok := agStore.Get(createdAcc.ID); ok {
+		t.Errorf("expected account to be deleted from store")
+	}
+}
+
+func TestAntigravityQuotaTracker(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-router-quota-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	agStore, _ := antigravity.NewAccountStore(tempDir)
+	agClient := antigravity.NewClient(agStore)
+
+	router := handler.NewRouter(ks, ms, nil, agClient)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := server.Client()
+
+	// Seed two accounts: acc1 and acc2
+	acc1 := &antigravity.Account{
+		ID:        "acc_1",
+		Email:     "acc1@gmail.com",
+		IsActive:  true,
+		CreatedAt: time.Now(),
+	}
+	acc2 := &antigravity.Account{
+		ID:        "acc_2",
+		Email:     "acc2@gmail.com",
+		IsActive:  true,
+		CreatedAt: time.Now(),
+	}
+	_ = agStore.Save(acc1)
+	_ = agStore.Save(acc2)
+
+	// Check IsExhausted initially false
+	if agClient.IsExhausted(acc1.ID, "gemini-3.8-flash") {
+		t.Errorf("expected acc1 to not be exhausted initially")
+	}
+
+	// Mark acc1 exhausted for gemini
+	agClient.MarkExhausted(acc1.ID, "gemini-3.8-flash", time.Now().Add(10*time.Minute))
+	if !agClient.IsExhausted(acc1.ID, "gemini-3.8-flash") {
+		t.Errorf("expected acc1 to be marked exhausted")
+	}
+
+	// GetActiveForModel should pick acc2 since acc1 is exhausted for gemini
+	chosen, ok := agClient.GetActiveForModel("gemini-3.8-flash")
+	if !ok || chosen.ID != acc2.ID {
+		t.Errorf("expected GetActiveForModel to select unexhausted acc2, got: %+v", chosen)
+	}
+
+	// Test GET /api/providers/antigravity/quota
+	req, _ := http.NewRequest("GET", server.URL+"/api/providers/antigravity/quota", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("failed to get quotas: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for /api/providers/antigravity/quota, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Test GET /api/providers/antigravity/accounts/nonexistent/quota returns 404
+	req, _ = http.NewRequest("GET", server.URL+"/api/providers/antigravity/accounts/nonexistent/quota", nil)
+	resp, _ = client.Do(req)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 for nonexistent account quota, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
 }

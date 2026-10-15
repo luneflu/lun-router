@@ -3,16 +3,20 @@
 	import { cn } from '$lib/utils';
 	import LayoutDashboardIcon from '@lucide/svelte/icons/layout-dashboard';
 	import BotIcon from '@lucide/svelte/icons/bot';
+	import RocketIcon from '@lucide/svelte/icons/rocket';
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
 
 	interface Props {
-		activeView: 'home' | 'opencode';
-		onSelectView?: (view: 'home' | 'opencode') => void;
+		activeView: 'home' | 'opencode' | 'antigravity';
+		onSelectView?: (view: 'home' | 'opencode' | 'antigravity') => void;
 		totalKeys: number;
 		enabledModels: number;
 		totalModels: number;
+		antigravityAccounts?: number;
+		antigravityEnabledModels?: number;
+		antigravityTotalModels?: number;
 		mobileOpen: boolean;
 		onCloseMobile: () => void;
 	}
@@ -23,11 +27,14 @@
 		totalKeys,
 		enabledModels,
 		totalModels,
+		antigravityAccounts = 0,
+		antigravityEnabledModels = 0,
+		antigravityTotalModels = 0,
 		mobileOpen,
 		onCloseMobile
 	}: Props = $props();
 
-	function handleNavigate(view: 'home' | 'opencode') {
+	function handleNavigate(view: 'home' | 'opencode' | 'antigravity') {
 		onSelectView?.(view);
 		onCloseMobile();
 	}
@@ -110,7 +117,9 @@
 				<span class="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
 					Providers
 				</span>
-				<span class="font-mono text-[10px] text-muted-foreground">1 active</span>
+				<span class="font-mono text-[10px] text-muted-foreground">
+					{1 + (antigravityAccounts > 0 ? 1 : 0)} active
+				</span>
 			</div>
 
 			<a
@@ -140,6 +149,41 @@
 					{#if totalModels > 0}
 						<span class="font-mono text-[10px] text-muted-foreground">
 							{enabledModels}/{totalModels}
+						</span>
+					{/if}
+				</div>
+			</a>
+
+			<a
+				href="/antigravity"
+				class={cn(
+					'flex items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition-colors',
+					activeView === 'antigravity'
+						? 'bg-amber-500/10 font-semibold text-amber-500'
+						: 'text-muted-foreground hover:bg-muted hover:text-foreground'
+				)}
+				onclick={() => handleNavigate('antigravity')}
+			>
+				<div class="flex items-center gap-2.5">
+					<div class="relative flex items-center justify-center">
+						<RocketIcon class="size-4" />
+						<span
+							class={cn(
+								'absolute -end-0.5 -top-0.5 size-1.5 rounded-full',
+								antigravityAccounts > 0 ? 'bg-amber-500' : 'bg-muted-foreground/40'
+							)}
+							title={antigravityAccounts > 0 ? 'Active accounts' : 'No accounts connected'}
+						></span>
+					</div>
+					<div class="flex flex-col items-start text-start">
+						<span>Antigravity</span>
+					</div>
+				</div>
+
+				<div class="flex items-center gap-1.5">
+					{#if antigravityTotalModels > 0}
+						<span class="font-mono text-[10px] text-muted-foreground">
+							{antigravityEnabledModels}/{antigravityTotalModels}
 						</span>
 					{/if}
 				</div>

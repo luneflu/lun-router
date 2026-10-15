@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"lun-router/internal/antigravity"
 	"lun-router/internal/handler"
 	"lun-router/internal/opencode"
 	"lun-router/internal/store"
@@ -20,7 +21,7 @@ var buildFS embed.FS
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "20128"
 	}
 
 	dataDir := os.Getenv("DATA_DIR")
@@ -38,6 +39,12 @@ func main() {
 		log.Fatalf("Failed to initialize ModelStore: %v", err)
 	}
 
+	agStore, err := antigravity.NewAccountStore(dataDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize Antigravity AccountStore: %v", err)
+	}
+	agClient := antigravity.NewClient(agStore)
+
 	vm := opencode.NewVersionManager(dataDir, 2*time.Hour)
 	vm.StartBackgroundSync(context.Background())
 
@@ -48,7 +55,7 @@ func main() {
 		log.Fatalf("Failed to load embedded frontend: %v", err)
 	}
 
-	router := handler.NewRouter(ks, ms, client, distFS)
+	router := handler.NewRouter(ks, ms, client, agClient, distFS)
 
 	log.Printf("Lun Router Go backend running on :%s (opencode version: %s, data dir: %s)", port, vm.GetVersion(), dataDir)
 	if err := http.ListenAndServe(":"+port, router); err != nil {

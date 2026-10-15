@@ -7,8 +7,8 @@ import { defineConfig } from 'vite';
 export default defineConfig({
 	server: {
 		proxy: {
-			'/api': 'http://localhost:8080',
-			'/v1': 'http://localhost:8080'
+			'/api': 'http://localhost:20128',
+			'/v1': 'http://localhost:20128'
 		}
 	},
 	plugins: [
