@@ -18,6 +18,22 @@ type Stats struct {
 	Hits        []Hit `json:"hits"`
 }
 
+// FilterNames lists the distinct filters that fired, in hit order.
+func (s *Stats) FilterNames() []string {
+	if s == nil {
+		return nil
+	}
+	seen := make(map[string]bool, len(s.Hits))
+	names := make([]string, 0, len(s.Hits))
+	for _, h := range s.Hits {
+		if !seen[h.Filter] {
+			seen[h.Filter] = true
+			names = append(names, h.Filter)
+		}
+	}
+	return names
+}
+
 func (s *Stats) LogLine() string {
 	if s == nil || len(s.Hits) == 0 {
 		return ""

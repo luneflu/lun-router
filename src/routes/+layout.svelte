@@ -23,14 +23,16 @@
 
 	let mobileMenuOpen = $state(false);
 
-	const activeView = $derived<'home' | 'opencode' | 'antigravity' | 'token-saver'>(
+	const activeView = $derived<'home' | 'usage' | 'opencode' | 'antigravity' | 'token-saver'>(
 		page.url.pathname.startsWith('/antigravity')
 			? 'antigravity'
 			: page.url.pathname.startsWith('/opencode')
 				? 'opencode'
 				: page.url.pathname.startsWith('/token-saver')
 					? 'token-saver'
-					: 'home'
+					: page.url.pathname.startsWith('/usage')
+						? 'usage'
+						: 'home'
 	);
 
 	function loadData() {

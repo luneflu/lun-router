@@ -18,6 +18,7 @@ import (
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
 	"lun-router/internal/store"
+	"lun-router/internal/usage"
 )
 
 type CompletionHandler struct {
@@ -28,6 +29,12 @@ type CompletionHandler struct {
 	compactorService *compactor.Service
 	cavemanService   *caveman.Service
 	ponytailService  *ponytail.Service
+	usage            *usage.Service
+}
+
+// SetUsage attaches the usage monitor. Optional: nil records nothing.
+func (h *CompletionHandler) SetUsage(s *usage.Service) {
+	h.usage = s
 }
 
 func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service) *CompletionHandler {
@@ -548,6 +555,8 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 	// 1. Authenticate with router API key
 	isInternalAPI := strings.HasPrefix(r.URL.Path, "/api/chat/completions")
 
+	var keyID, keyName string
+
 	authHeader := r.Header.Get("Authorization")
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 	if token == "" || token == authHeader {
@@ -569,6 +578,9 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 		token = "web-ui-test"
 	} else {
 		key, ok := h.store.FindByKey(token)
+		if ok {
+			keyID, keyName = key.ID, key.Name
+		}
 		if (!ok || !key.IsActive) && !isInternalAPI {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -600,6 +612,7 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 	if model == "" {
 		model = "big-pickle"
 	}
+	requestedModel := model
 	modelProvider, bareModel, prefixed := splitProviderPrefix(model)
 	if prefixed {
 		model = bareModel
@@ -608,13 +621,47 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	clientWantsStream, _ := bodyMap["stream"].(bool)
 
+	// Usage monitoring: one event per request, written when the handler returns.
+	rec := &statusRecorder{ResponseWriter: w}
+	w = rec
+	reqStart := time.Now()
+	tokens := &usage.Tokens{}
+	ev := usage.Event{
+		KeyID:    keyID,
+		KeyName:  keyName,
+		Model:    model,
+		ReqModel: requestedModel,
+		Endpoint: r.URL.Path,
+		Stream:   clientWantsStream,
+		Agent:    r.Header.Get("User-Agent"),
+		Sess:     clientSessionID(r),
+	}
+	defer func() {
+		ev.Status = rec.status
+		if ev.Status == 0 {
+			ev.Status = http.StatusOK
+		}
+		ev.Ms = time.Since(reqStart).Milliseconds()
+		ev.In, ev.Out, ev.Cached, ev.Reasoning = tokens.In, tokens.Out, tokens.Cached, tokens.Reasoning
+		ev.TokSrc = tokens.Src
+		if ev.TokSrc == "" {
+			ev.TokSrc = "none"
+		}
+		if h.usage != nil {
+			h.usage.Record(ev)
+		}
+	}()
+
 	// Compactor: auto-compress tool output before dispatching to upstream LLMs
 	// Client opt-out via X-Compact: off or ?compact=off
 	clientOptOut := strings.EqualFold(r.Header.Get("X-Compact"), "off") ||
 		strings.EqualFold(r.URL.Query().Get("compact"), "off")
 
 	if h.compactorService != nil {
-		h.compactorService.ProcessBody(bodyMap, clientOptOut)
+		if stats := h.compactorService.ProcessBody(bodyMap, clientOptOut); stats != nil {
+			ev.Saved = stats.BytesBefore - stats.BytesAfter
+			ev.Filters = stats.FilterNames()
+		}
 	}
 
 	// Caveman voice & prompt optimization (say less, cut output tokens)
@@ -664,8 +711,14 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
+		ev.Provider = "antigravity"
+		if acc, ok := h.agClient.GetActiveForModel(model); ok {
+			ev.Account = acc.Email
+		}
+
 		upResp, err := h.agClient.ExecuteChat(r.Context(), bodyMap, clientWantsStream)
 		if err != nil {
+			ev.Err = "upstream_error"
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -676,6 +729,7 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 			})
 			return
 		}
+		ev.UpMs = time.Since(reqStart).Milliseconds()
 		defer upResp.Body.Close()
 
 		if upResp.StatusCode != http.StatusOK {
@@ -691,16 +745,19 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("Connection", "keep-alive")
 			flusher, canFlush := w.(http.Flusher)
-			streamAntigravityAsOpenAI(w, flusher, canFlush, upResp.Body, model)
+			streamAntigravityAsOpenAI(w, flusher, canFlush, upResp.Body, model, tokens)
 			return
 		}
 
-		handleAntigravityNonStreamResponse(w, upResp.Body, model)
+		handleAntigravityNonStreamResponse(w, upResp.Body, model, tokens)
 		return
 	}
 
+	ev.Provider = "opencode"
+
 	// Check if requested model is disabled for OpenCode
 	if h.modelStore != nil && h.modelStore.IsDisabled("opencode", model) {
+		ev.Err = "model_disabled"
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -720,6 +777,7 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	upResp, err := h.client.ExecuteChat(r.Context(), bodyMap, token, customSession)
 	if err != nil {
+		ev.Err = "upstream_error"
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -731,6 +789,7 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer upResp.Body.Close()
+	ev.UpMs = time.Since(reqStart).Milliseconds()
 
 	if upResp.StatusCode != http.StatusOK {
 		w.Header().Set("Content-Type", "application/json")
@@ -752,7 +811,7 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 
 		isResponses := strings.HasPrefix(model, "muse-spark")
 		if isResponses {
-			streamResponsesAsOpenAI(w, flusher, canFlush, upResp.Body, model)
+			streamResponsesAsOpenAI(w, flusher, canFlush, upResp.Body, model, tokens)
 			return
 		}
 
@@ -760,6 +819,7 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 		for {
 			line, err := reader.ReadBytes('\n')
 			if len(line) > 0 {
+				captureStreamUsage(line, tokens)
 				_, _ = w.Write(line)
 				if canFlush {
 					flusher.Flush()
@@ -773,7 +833,7 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	// 5. Aggregate streaming chunks into full JSON response
-	fullResp, err := opencode.AggregateSSEStream(upResp.Body, model)
+	fullResp, err := opencode.AggregateSSEStream(upResp.Body, model, tokens)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -790,7 +850,7 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 	_ = json.NewEncoder(w).Encode(fullResp)
 }
 
-func streamResponsesAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool, body io.Reader, model string) {
+func streamResponsesAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool, body io.Reader, model string, tk *usage.Tokens) {
 	reader := bufio.NewReader(body)
 	streamID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
@@ -820,6 +880,12 @@ func streamResponsesAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool, b
 						}
 					} else {
 						msgType, _ := raw["type"].(string)
+						if msgType == "response.completed" {
+							if respMap, ok := raw["response"].(map[string]any); ok {
+								(&usageEnvelope{}).applyAny(respMap["usage"], tk)
+							}
+							(&usageEnvelope{}).applyAny(raw["usage"], tk)
+						}
 
 						// 1. First assistant delta: send role chunk if needed
 						if !sentRole && (msgType == "response.output_text.delta" || msgType == "response.output_item.added") {
@@ -906,7 +972,7 @@ func streamResponsesAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool, b
 	}
 }
 
-func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool, body io.Reader, model string) {
+func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool, body io.Reader, model string, tk *usage.Tokens) {
 	reader := bufio.NewReader(body)
 	streamID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	created := time.Now().Unix()
@@ -920,6 +986,17 @@ func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool,
 			if strings.HasPrefix(trimmed, "data: ") {
 				payload := strings.TrimPrefix(trimmed, "data: ")
 				if payload == "[DONE]" {
+					if tk.Src == "upstream" {
+						usageChunk, _ := json.Marshal(map[string]any{
+							"id":      streamID,
+							"object":  "chat.completion.chunk",
+							"created": created,
+							"model":   model,
+							"choices": []any{},
+							"usage":   usagePayload(tk),
+						})
+						_, _ = fmt.Fprintf(w, "data: %s\n\n", usageChunk)
+					}
 					_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 					if canFlush {
 						flusher.Flush()
@@ -934,6 +1011,8 @@ func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool,
 					if !ok {
 						respMap = data
 					}
+
+					(&usageEnvelope{}).applyAny(respMap["usageMetadata"], tk)
 
 					candidates, _ := respMap["candidates"].([]any)
 					if len(candidates) > 0 {
@@ -1025,7 +1104,7 @@ func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool,
 	}
 }
 
-func handleAntigravityNonStreamResponse(w http.ResponseWriter, body io.Reader, model string) {
+func handleAntigravityNonStreamResponse(w http.ResponseWriter, body io.Reader, model string, tk *usage.Tokens) {
 	bodyBytes, err := io.ReadAll(body)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -1045,6 +1124,8 @@ func handleAntigravityNonStreamResponse(w http.ResponseWriter, body io.Reader, m
 	if !ok {
 		respMap = data
 	}
+
+	(&usageEnvelope{}).applyAny(respMap["usageMetadata"], tk)
 
 	var fullText string
 	if candidates, ok := respMap["candidates"].([]any); ok && len(candidates) > 0 {
@@ -1078,6 +1159,9 @@ func handleAntigravityNonStreamResponse(w http.ResponseWriter, body io.Reader, m
 				"finish_reason": "stop",
 			},
 		},
+	}
+	if tk.Src == "upstream" {
+		openAIResp["usage"] = usagePayload(tk)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

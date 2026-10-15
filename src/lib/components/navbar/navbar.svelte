@@ -10,7 +10,7 @@
 
 	interface Props {
 		error: string | null;
-		activeView: 'home' | 'opencode' | 'antigravity' | 'token-saver';
+		activeView: 'home' | 'usage' | 'opencode' | 'antigravity' | 'token-saver';
 		onToggleMobileMenu?: () => void;
 	}
 
@@ -49,6 +49,8 @@
 				<ChevronRightIcon class="size-3 text-muted-foreground/60" />
 				{#if activeView === 'home'}
 					<span class="font-semibold text-foreground">Home</span>
+				{:else if activeView === 'usage'}
+					<span class="font-semibold text-foreground">Usage</span>
 				{:else if activeView === 'antigravity'}
 					<span class="text-muted-foreground">Providers</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />

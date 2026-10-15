@@ -17,6 +17,7 @@ import (
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
 	"lun-router/internal/store"
+	"lun-router/internal/usage"
 )
 
 //go:embed all:build
@@ -83,7 +84,12 @@ func main() {
 		log.Fatalf("Failed to load embedded frontend: %v", err)
 	}
 
-	router := handler.NewRouter(ks, ms, client, agClient, compactorSvc, cavemanSvc, ponytailSvc, authSvc, distFS)
+	usageSvc, err := usage.NewService(dataDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize usage service: %v", err)
+	}
+
+	router := handler.NewRouter(ks, ms, client, agClient, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, distFS)
 
 	log.Printf("Lun Router Go backend running on :%s (opencode version: %s, data dir: %s)", port, vm.GetVersion(), dataDir)
 	if err := http.ListenAndServe(":"+port, router); err != nil {

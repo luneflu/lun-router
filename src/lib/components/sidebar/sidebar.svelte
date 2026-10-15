@@ -2,6 +2,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { cn } from '$lib/utils';
 	import LayoutDashboardIcon from '@lucide/svelte/icons/layout-dashboard';
+	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import RocketIcon from '@lucide/svelte/icons/rocket';
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
@@ -10,8 +11,8 @@
 	import { Button } from '$lib/components/ui/button';
 
 	interface Props {
-		activeView: 'home' | 'opencode' | 'antigravity' | 'token-saver';
-		onSelectView?: (view: 'home' | 'opencode' | 'antigravity' | 'token-saver') => void;
+		activeView: 'home' | 'usage' | 'opencode' | 'antigravity' | 'token-saver';
+		onSelectView?: (view: 'home' | 'usage' | 'opencode' | 'antigravity' | 'token-saver') => void;
 		totalKeys: number;
 		enabledModels: number;
 		totalModels: number;
@@ -35,7 +36,7 @@
 		onCloseMobile
 	}: Props = $props();
 
-	function handleNavigate(view: 'home' | 'opencode' | 'antigravity' | 'token-saver') {
+	function handleNavigate(view: 'home' | 'usage' | 'opencode' | 'antigravity' | 'token-saver') {
 		onSelectView?.(view);
 		onCloseMobile();
 	}
@@ -109,6 +110,22 @@
 				<Badge variant="outline" class="font-mono text-[10px]">
 					{totalKeys}
 				</Badge>
+			</a>
+
+			<a
+				href="/usage"
+				class={cn(
+					'flex items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition-colors',
+					activeView === 'usage'
+						? 'bg-primary/10 font-semibold text-primary'
+						: 'text-muted-foreground hover:bg-muted hover:text-foreground'
+				)}
+				onclick={() => handleNavigate('usage')}
+			>
+				<div class="flex items-center gap-2.5">
+					<ActivityIcon class="size-4" />
+					<span>Usage</span>
+				</div>
 			</a>
 		</div>
 

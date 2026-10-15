@@ -1,10 +1,17 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { keysState } from '$lib/state/keys.svelte';
+	import { usageState } from '$lib/state/usage.svelte';
 	import StatsCards from '$lib/components/keys/stats-cards.svelte';
+	import UsageOverview from '$lib/components/usage/usage-overview.svelte';
 	import KeysTable from '$lib/components/keys/keys-table.svelte';
 	import CreateKeyDialog from '$lib/components/keys/create-key-dialog.svelte';
 	import KeySuccessDialog from '$lib/components/keys/key-success-dialog.svelte';
 	import type { APIKey, CreateKeyPayload } from '$lib/types';
+
+	onMount(() => {
+		usageState.load();
+	});
 
 	let isCreateOpen = $state(false);
 	let isSuccessOpen = $state(false);
@@ -37,6 +44,8 @@
 </script>
 
 <StatsCards totalCount={keysState.totalCount} activeCount={keysState.activeCount} />
+
+<UsageOverview />
 
 <KeysTable
 	keys={keysState.filtered}

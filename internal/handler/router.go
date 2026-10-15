@@ -14,14 +14,17 @@ import (
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
 	"lun-router/internal/store"
+	"lun-router/internal/usage"
 )
 
-func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, staticFS ...fs.FS) http.Handler {
+func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
 	mux := http.NewServeMux()
 
 	keyH := NewKeyHandler(ks)
 	compH := NewCompletionHandler(ks, ms, client, agClient, compactorSvc, cavemanSvc, ponytailSvc)
 	compactH := NewCompactorHandler(compactorSvc)
+	usageH := NewUsageHandler(usageSvc)
+	compH.SetUsage(usageSvc)
 	caveH := NewCavemanHandler(cavemanSvc)
 	ponyH := NewPonytailHandler(ponytailSvc)
 
@@ -43,6 +46,9 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	mux.HandleFunc("PUT /api/keys/{id}", keyH.Update)
 	mux.HandleFunc("DELETE /api/keys/{id}", keyH.Delete)
 	mux.HandleFunc("GET /api/keys/verify", keyH.Verify)
+
+	// Usage Routes (request/token monitoring)
+	mux.HandleFunc("GET /api/usage", usageH.Summary)
 
 	// Compactor Routes (tool output compression)
 	mux.HandleFunc("GET /api/compactor", compactH.GetStatus)

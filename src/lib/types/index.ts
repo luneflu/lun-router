@@ -107,6 +107,105 @@ export interface CompactorTestResult {
 	output: string;
 }
 
+export interface UsageTotals {
+	requests: number;
+	errors: number;
+	in: number;
+	out: number;
+	cached: number;
+	reasoning: number;
+	saved_bytes: number;
+	avg_ms: number;
+}
+
+export interface UsageDay {
+	date: string;
+	requests: number;
+	errors: number;
+	in: number;
+	out: number;
+}
+
+export interface UsageKeyRow {
+	key_id: string;
+	key_name: string;
+	requests: number;
+	errors: number;
+	in: number;
+	out: number;
+	last_ts: string;
+}
+
+export interface UsageModelRow {
+	prov: string;
+	model: string;
+	requests: number;
+	errors: number;
+	in: number;
+	out: number;
+}
+
+export interface UsageEventRow {
+	ts: string;
+	key_id?: string;
+	key_name?: string;
+	prov: string;
+	acct?: string;
+	model: string;
+	req_model?: string;
+	ep?: string;
+	stream?: boolean;
+	status: number;
+	ms: number;
+	up_ms?: number;
+	in: number;
+	out: number;
+	cached?: number;
+	reasoning?: number;
+	tok_src?: string;
+	err?: string;
+	saved?: number;
+	filters?: string[];
+	agent?: string;
+	sess?: string;
+}
+
+export interface UsageProviderRow {
+	prov: string;
+	requests: number;
+	errors: number;
+	in: number;
+	out: number;
+}
+
+export interface UsageHourRow {
+	hour: number;
+	requests: number;
+	errors: number;
+	in: number;
+	out: number;
+}
+
+export interface UsageFilters {
+	prov?: string;
+	key_id?: string;
+	model?: string;
+}
+
+export interface UsageSummary {
+	days: number;
+	from: string;
+	to: string;
+	filters: UsageFilters;
+	totals: UsageTotals;
+	by_day: UsageDay[];
+	by_hour?: UsageHourRow[];
+	by_provider: UsageProviderRow[];
+	by_key: UsageKeyRow[];
+	by_model: UsageModelRow[];
+	recent: UsageEventRow[];
+}
+
 export interface CavemanModeInfo {
 	id: string;
 	name: string;

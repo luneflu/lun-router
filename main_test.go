@@ -25,6 +25,7 @@ import (
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
 	"lun-router/internal/store"
+	"lun-router/internal/usage"
 )
 
 func TestAPIKeysWorkflow(t *testing.T) {
@@ -44,7 +45,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 		t.Fatalf("NewModelStore: %v", err)
 	}
 
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, nil, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -216,7 +217,7 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 
 	ms, _ := store.NewModelStore(tempDir)
 	mockClient := opencode.NewClient(mockUpstream.URL, nil)
-	routerServer := httptest.NewServer(handler.NewRouter(ks, ms, mockClient, nil, nil, nil, nil, nil))
+	routerServer := httptest.NewServer(handler.NewRouter(ks, ms, mockClient, nil, nil, nil, nil, nil, nil))
 	defer routerServer.Close()
 
 	client := routerServer.Client()
@@ -358,7 +359,7 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 	key, _ := ks.Create("Live Test Key", "sk-live-key")
 
 	ms, _ := store.NewModelStore(tempDir)
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, nil, nil))
 	defer server.Close()
 
 	payload := map[string]any{
@@ -459,7 +460,7 @@ func TestOpenCodeModelEnableDisable(t *testing.T) {
 	ms, _ := store.NewModelStore(tempDir)
 	key, _ := ks.Create("Admin Key", "sk-test-admin-key")
 
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, nil, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -627,7 +628,7 @@ func TestOpenCodeSessionRotationOnRateLimit(t *testing.T) {
 	key, _ := ks.Create("Rate Limit Test Key", "sk-ratelimit-key-1")
 
 	client := opencode.NewClient(mockUpstream.URL, nil)
-	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -723,7 +724,7 @@ func TestOpenCodeModelTestPing(t *testing.T) {
 	ms, _ := store.NewModelStore(tempDir)
 	client := opencode.NewClient(mockUpstream.URL, nil)
 
-	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -823,7 +824,7 @@ func TestOpenCodeVersionManager(t *testing.T) {
 	ks, _ := store.NewKeyStore(tempDir)
 	ms, _ := store.NewModelStore(tempDir)
 	client := opencode.NewClient("", vm2)
-	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -853,7 +854,7 @@ func TestSPAStaticServing(t *testing.T) {
 		},
 	}
 
-	router := handler.NewRouter(nil, nil, nil, nil, nil, nil, nil, nil, mockFS)
+	router := handler.NewRouter(nil, nil, nil, nil, nil, nil, nil, nil, nil, mockFS)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -993,7 +994,7 @@ func TestResponsesStreamTranslation(t *testing.T) {
 	defer upstream.Close()
 
 	client := opencode.NewClient(upstream.URL, nil)
-	router := handler.NewRouter(nil, nil, client, nil, nil, nil, nil, nil)
+	router := handler.NewRouter(nil, nil, client, nil, nil, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1061,7 +1062,7 @@ func TestAntigravityAccountsAndProvider(t *testing.T) {
 	agStore, _ := antigravity.NewAccountStore(tempDir)
 	agClient := antigravity.NewClient(agStore)
 
-	router := handler.NewRouter(ks, ms, nil, agClient, nil, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, nil, agClient, nil, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1208,7 +1209,7 @@ func TestAntigravityQuotaTracker(t *testing.T) {
 	agStore, _ := antigravity.NewAccountStore(tempDir)
 	agClient := antigravity.NewClient(agStore)
 
-	router := handler.NewRouter(ks, ms, nil, agClient, nil, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, nil, agClient, nil, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1281,7 +1282,7 @@ func TestCompactorWorkflow(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	router := handler.NewRouter(ks, ms, nil, nil, compactorSvc, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, nil, nil, compactorSvc, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1369,6 +1370,90 @@ func TestCompactorWorkflow(t *testing.T) {
 	}
 }
 
+func TestUsageEndpoint(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-usage-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	usageSvc, err := usage.NewService(tempDir)
+	if err != nil {
+		t.Fatalf("usage.NewService: %v", err)
+	}
+	defer usageSvc.Close()
+
+	usageSvc.Record(usage.Event{KeyID: "k1", KeyName: "laptop", Provider: "opencode", Model: "big-pickle", Status: 200, In: 100, Out: 20, Ms: 500})
+	usageSvc.Record(usage.Event{KeyID: "k2", KeyName: "ci", Provider: "antigravity", Model: "gemini-3.8-flash", Status: 502, Err: "upstream_error"})
+
+	router := handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, nil, usageSvc)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	resp, err := server.Client().Get(server.URL + "/api/usage?days=1")
+	if err != nil {
+		t.Fatalf("GET /api/usage: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var sum struct {
+		Days   int `json:"days"`
+		Totals struct {
+			Requests   int `json:"requests"`
+			Errors     int `json:"errors"`
+			In         int `json:"in"`
+			Out        int `json:"out"`
+			SavedBytes int `json:"saved_bytes"`
+			AvgMs      int `json:"avg_ms"`
+		} `json:"totals"`
+		ByKey []struct {
+			KeyID    string `json:"key_id"`
+			Requests int    `json:"requests"`
+		} `json:"by_key"`
+		ByModel []struct {
+			Provider string `json:"prov"`
+			Model    string `json:"model"`
+		} `json:"by_model"`
+		ByDay []struct {
+			Date     string `json:"date"`
+			Requests int    `json:"requests"`
+		} `json:"by_day"`
+		Recent []struct {
+			Model string `json:"model"`
+		} `json:"recent"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&sum); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if sum.Days != 1 {
+		t.Errorf("days = %d, want 1", sum.Days)
+	}
+	if sum.Totals.Requests != 2 || sum.Totals.Errors != 1 {
+		t.Errorf("requests/errors = %d/%d, want 2/1", sum.Totals.Requests, sum.Totals.Errors)
+	}
+	if sum.Totals.In != 100 || sum.Totals.Out != 20 {
+		t.Errorf("in/out = %d/%d, want 100/20", sum.Totals.In, sum.Totals.Out)
+	}
+	if sum.Totals.AvgMs != 250 {
+		t.Errorf("avg_ms = %d, want 250", sum.Totals.AvgMs)
+	}
+	if len(sum.ByKey) != 2 || len(sum.ByModel) != 2 {
+		t.Errorf("by_key/by_model lengths = %d/%d, want 2/2", len(sum.ByKey), len(sum.ByModel))
+	}
+	if len(sum.ByDay) != 1 || sum.ByDay[0].Requests != 2 {
+		t.Errorf("by_day = %+v, want one day with 2 requests", sum.ByDay)
+	}
+	if len(sum.Recent) != 2 || sum.Recent[0].Model != "gemini-3.8-flash" {
+		t.Errorf("recent = %+v, want newest first", sum.Recent)
+	}
+}
+
 func TestCavemanWorkflow(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "lun-caveman-test-*")
 	if err != nil {
@@ -1384,7 +1469,7 @@ func TestCavemanWorkflow(t *testing.T) {
 	}
 	defer cavemanSvc.Close()
 
-	router := handler.NewRouter(ks, ms, nil, nil, nil, cavemanSvc, nil, nil)
+	router := handler.NewRouter(ks, ms, nil, nil, nil, cavemanSvc, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1472,7 +1557,7 @@ func TestPonytailWorkflow(t *testing.T) {
 	}
 	defer ponytailSvc.Close()
 
-	router := handler.NewRouter(ks, ms, nil, nil, nil, nil, ponytailSvc, nil)
+	router := handler.NewRouter(ks, ms, nil, nil, nil, nil, ponytailSvc, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1575,7 +1660,7 @@ func TestDynamicModelSync(t *testing.T) {
 	mm := opencode.NewModelManager(tempDir, ocClient, time.Hour)
 	ocClient.SetModelManager(mm)
 
-	router := handler.NewRouter(ks, ms, ocClient, agClient, nil, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, ocClient, agClient, nil, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1653,7 +1738,7 @@ func TestPasswordAuthWorkflow(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	router := handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, authSvc)
+	router := handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, authSvc, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 

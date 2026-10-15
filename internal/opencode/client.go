@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"lun-router/internal/usage"
 )
 
 const (
@@ -267,12 +269,13 @@ func (c *Client) doRequest(ctx context.Context, targetURL string, payloadBytes [
 }
 
 // AggregateSSEStream parses incoming SSE stream into a standard OpenAI ChatCompletion response
-func AggregateSSEStream(r io.Reader, fallbackModel string) (map[string]any, error) {
+func AggregateSSEStream(r io.Reader, fallbackModel string, tk *usage.Tokens) (map[string]any, error) {
 	var fullText strings.Builder
 	var lastID string
 	var lastModel = fallbackModel
 	var lastCreated = time.Now().Unix()
 	var finishReason = "stop"
+	var lastUsage *usageEnvelope
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -297,15 +300,23 @@ func AggregateSSEStream(r io.Reader, fallbackModel string) (map[string]any, erro
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
+			Usage *usageEnvelope `json:"usage"`
 			// Responses API fields
 			Type     string `json:"type"`
 			Delta    any    `json:"delta"`
 			Response struct {
-				ID string `json:"id"`
+				ID    string         `json:"id"`
+				Usage *usageEnvelope `json:"usage"`
 			} `json:"response"`
 		}
 
 		if err := json.Unmarshal([]byte(payload), &chunk); err == nil {
+			if chunk.Usage != nil {
+				lastUsage = chunk.Usage
+			}
+			if chunk.Response.Usage != nil {
+				lastUsage = chunk.Response.Usage
+			}
 			if chunk.ID != "" {
 				lastID = chunk.ID
 			}
@@ -347,6 +358,16 @@ func AggregateSSEStream(r io.Reader, fallbackModel string) (map[string]any, erro
 		lastID = "chatcmpl-" + hex.EncodeToString(b)
 	}
 
+	usageField := map[string]int{
+		"prompt_tokens":     0,
+		"completion_tokens": len(fullText.String()) / 4,
+		"total_tokens":      len(fullText.String()) / 4,
+	}
+	if lastUsage != nil {
+		lastUsage.apply(tk)
+		usageField = lastUsage.toMap()
+	}
+
 	return map[string]any{
 		"id":      lastID,
 		"object":  "chat.completion",
@@ -362,12 +383,61 @@ func AggregateSSEStream(r io.Reader, fallbackModel string) (map[string]any, erro
 				"finish_reason": finishReason,
 			},
 		},
-		"usage": map[string]int{
-			"prompt_tokens":     0,
-			"completion_tokens": len(fullText.String()) / 4,
-			"total_tokens":      len(fullText.String()) / 4,
-		},
+		"usage": usageField,
 	}, nil
+}
+
+// usageEnvelope is the subset of provider usage counters this client understands.
+type usageEnvelope struct {
+	PromptTokens            int `json:"prompt_tokens"`
+	CompletionTokens        int `json:"completion_tokens"`
+	PromptTokenCount        int `json:"promptTokenCount"`
+	CandidatesTokenCount    int `json:"candidatesTokenCount"`
+	ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
+	CachedContentTokenCount int `json:"cachedContentTokenCount"`
+	InputTokens             int `json:"input_tokens"`
+	OutputTokens            int `json:"output_tokens"`
+	PromptTokensDetails     *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	CompletionTokensDetails *struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+}
+
+func (u *usageEnvelope) counters() (in, out, cached, reasoning int) {
+	in, out = u.PromptTokens, u.CompletionTokens
+	if in == 0 && out == 0 {
+		in, out = u.PromptTokenCount, u.CandidatesTokenCount
+		reasoning = u.ThoughtsTokenCount
+		cached = u.CachedContentTokenCount
+	}
+	if in == 0 && out == 0 {
+		in, out = u.InputTokens, u.OutputTokens
+	}
+	if u.PromptTokensDetails != nil {
+		cached = u.PromptTokensDetails.CachedTokens
+	}
+	if u.CompletionTokensDetails != nil {
+		reasoning = u.CompletionTokensDetails.ReasoningTokens
+	}
+	return in, out, cached, reasoning
+}
+
+func (u *usageEnvelope) apply(tk *usage.Tokens) {
+	in, out, cached, reasoning := u.counters()
+	tk.Set(in, out, cached, reasoning)
+}
+
+func (u *usageEnvelope) toMap() map[string]int {
+	in, out, cached, reasoning := u.counters()
+	return map[string]int{
+		"prompt_tokens":     in,
+		"completion_tokens": out,
+		"total_tokens":      in + out,
+		"cached_tokens":     cached,
+		"reasoning_tokens":  reasoning,
+	}
 }
 
 func toResponsesMessage(role, content string) (map[string]any, bool) {
