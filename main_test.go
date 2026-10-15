@@ -760,6 +760,29 @@ func TestOpenCodeModelTestPing(t *testing.T) {
 	if disabledResult.OK {
 		t.Errorf("expected ok: false for disabled model, got true")
 	}
+
+	// 3. Test batch ping of multiple models concurrently
+	_ = ms.SetDisabled("opencode", "big-pickle", false)
+	batchPayload, _ := json.Marshal(map[string]any{
+		"models":      []string{"big-pickle", "ling-3.1-flash-free"},
+		"concurrency": 2,
+	})
+	resp, err = server.Client().Post(server.URL+"/api/models/test", "application/json", bytes.NewReader(batchPayload))
+	if err != nil {
+		t.Fatalf("POST /api/models/test batch: %v", err)
+	}
+	var batchResult struct {
+		OK      bool                      `json:"ok"`
+		Total   int                       `json:"total"`
+		Passed  int                       `json:"passed"`
+		Results []handler.ModelTestResult `json:"results"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&batchResult)
+	resp.Body.Close()
+
+	if !batchResult.OK || batchResult.Total != 2 || batchResult.Passed != 2 {
+		t.Errorf("expected 2 passed models in batch, got %+v", batchResult)
+	}
 }
 
 // Test OpenCode Version Manager & Cache

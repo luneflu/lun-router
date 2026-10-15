@@ -29,7 +29,9 @@
 	let selectedChatModel = $state('big-pickle');
 	let isTestingAll = $state(false);
 	let testProgress = $state({ current: 0, total: 0 });
-	let testingModelId = $state<string | null>(null);
+	let testingModelIds = $state<string[]>([]);
+	let testResults = $state<Record<string, { ok: boolean; latencyMs?: number; error?: string }>>({});
+	let testConcurrency = $state(4);
 	let shouldCancelTestAll = false;
 
 	let togglingId = $state<string | null>(null);
@@ -84,10 +86,16 @@
 
 	// Ping model with empty prompt like 9router
 	async function handleTestModel(modelId: string, silent = false): Promise<boolean> {
-		testingModelId = modelId;
+		if (!testingModelIds.includes(modelId)) {
+			testingModelIds = [...testingModelIds, modelId];
+		}
 
 		try {
 			const res = await pingModel(modelId, '');
+			testResults = {
+				...testResults,
+				[modelId]: { ok: res.ok, latencyMs: res.latency_ms, error: res.error }
+			};
 			if (res.ok) {
 				if (!silent) {
 					toast.success(modelId, `Reachable (${res.latency_ms}ms)`);
@@ -100,18 +108,21 @@
 				return false;
 			}
 		} catch (e: unknown) {
+			const errMsg = e instanceof Error ? e.message : 'Network error';
+			testResults = {
+				...testResults,
+				[modelId]: { ok: false, error: errMsg }
+			};
 			if (!silent) {
-				toast.error(modelId, e instanceof Error ? e.message : 'Network error');
+				toast.error(modelId, errMsg);
 			}
 			return false;
 		} finally {
-			if (testingModelId === modelId) {
-				testingModelId = null;
-			}
+			testingModelIds = testingModelIds.filter((id) => id !== modelId);
 		}
 	}
 
-	// Test all enabled models sequentially
+	// Test all enabled models concurrently in batch
 	async function handleTestAll() {
 		const targetModels = providerState.models.filter((m) => m.enabled);
 		if (targetModels.length === 0) {
@@ -125,31 +136,38 @@
 
 		let passed = 0;
 		let failed = 0;
+		let completed = 0;
+		let cursor = 0;
 
-		for (let i = 0; i < targetModels.length; i++) {
-			if (shouldCancelTestAll) break;
-
-			const m = targetModels[i];
-			testProgress = { current: i + 1, total: targetModels.length };
-
-			const ok = await handleTestModel(m.id, true);
-			if (ok) passed++;
-			else failed++;
-
-			// Small 250ms pause between pings like 9router
-			if (i < targetModels.length - 1 && !shouldCancelTestAll) {
-				await new Promise((r) => setTimeout(r, 250));
+		const workerCount = Math.min(testConcurrency, targetModels.length);
+		const workers = Array.from({ length: workerCount }, async () => {
+			while (cursor < targetModels.length && !shouldCancelTestAll) {
+				const modelIndex = cursor++;
+				const m = targetModels[modelIndex];
+				const ok = await handleTestModel(m.id, true);
+				if (ok) passed++;
+				else failed++;
+				completed++;
+				testProgress = { current: completed, total: targetModels.length };
 			}
-		}
+		});
+
+		await Promise.all(workers);
 
 		isTestingAll = false;
-		testingModelId = null;
+		testingModelIds = [];
 
 		if (!shouldCancelTestAll) {
 			if (failed === 0) {
-				toast.success('Test All Completed', `All ${passed} models reachable`);
+				toast.success(
+					'Batch Test Completed',
+					`All ${passed} models reachable (${testConcurrency}x parallel)`
+				);
 			} else {
-				toast.error('Test All Completed', `${passed} passed, ${failed} failed`);
+				toast.info(
+					'Batch Test Completed',
+					`${passed} passed, ${failed} failed (${testConcurrency}x parallel)`
+				);
 			}
 		}
 	}
@@ -157,7 +175,7 @@
 	function handleStopTestAll() {
 		shouldCancelTestAll = true;
 		isTestingAll = false;
-		testingModelId = null;
+		testingModelIds = [];
 		toast.info('Stopped', 'Test all canceled');
 	}
 </script>
@@ -250,34 +268,48 @@
 					/>
 				</div>
 
-				<!-- Test All button (9router style) -->
-				{#if isTestingAll}
-					<div class="flex items-center gap-1.5">
-						<Button variant="default" size="sm" disabled class="gap-1.5 text-xs">
-							<RefreshCwIcon data-icon="inline-start" class="size-3.5 animate-spin" />
-							Testing ({testProgress.current}/{testProgress.total})
-						</Button>
-						<Button
-							variant="destructive"
-							size="sm"
-							onclick={handleStopTestAll}
-							title="Stop testing"
-						>
-							<SquareIcon class="size-3" />
-						</Button>
-					</div>
-				{:else}
-					<Button
-						variant="default"
-						size="sm"
-						disabled={providerState.loading || providerState.enabledCount === 0}
-						onclick={handleTestAll}
-						title="Test all enabled models with empty prompt completions ping"
+				<!-- Batch concurrency & Test All button -->
+				<div class="flex items-center gap-1.5">
+					<select
+						bind:value={testConcurrency}
+						disabled={isTestingAll}
+						class="h-8 rounded-md border border-input bg-background px-2 py-1 text-xs shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+						title="Batch test concurrency (parallel pings)"
 					>
-						<FlaskConicalIcon data-icon="inline-start" class="size-3.5" />
-						Test All
-					</Button>
-				{/if}
+						<option value={1}>1x (Serial)</option>
+						<option value={2}>2x</option>
+						<option value={4}>4x (Batch)</option>
+						<option value={8}>8x (Turbo)</option>
+					</select>
+
+					{#if isTestingAll}
+						<div class="flex items-center gap-1.5">
+							<Button variant="default" size="sm" disabled class="gap-1.5 text-xs">
+								<RefreshCwIcon data-icon="inline-start" class="size-3.5 animate-spin" />
+								Testing ({testProgress.current}/{testProgress.total})
+							</Button>
+							<Button
+								variant="destructive"
+								size="sm"
+								onclick={handleStopTestAll}
+								title="Stop testing"
+							>
+								<SquareIcon class="size-3" />
+							</Button>
+						</div>
+					{:else}
+						<Button
+							variant="default"
+							size="sm"
+							disabled={providerState.loading || providerState.enabledCount === 0}
+							onclick={handleTestAll}
+							title="Test all enabled models in batch"
+						>
+							<FlaskConicalIcon data-icon="inline-start" class="size-3.5" />
+							Test All ({testConcurrency}x)
+						</Button>
+					{/if}
+				</div>
 
 				<!-- Bulk enable/disable buttons -->
 				<div class="flex items-center gap-1">
@@ -425,6 +457,24 @@
 
 								<Table.Cell class="text-end">
 									<div class="flex items-center justify-end gap-1.5">
+										{#if testResults[m.id]}
+											{#if testResults[m.id].ok}
+												<Badge
+													variant="outline"
+													class="border-green-500/30 bg-green-500/10 px-1.5 py-0 font-mono text-[10px] text-green-600 dark:text-green-400"
+												>
+													{testResults[m.id].latencyMs}ms
+												</Badge>
+											{:else}
+												<Badge
+													variant="outline"
+													class="border-destructive/30 bg-destructive/10 px-1.5 py-0 font-mono text-[10px] text-destructive"
+													title={testResults[m.id].error || 'Failed'}
+												>
+													Fail
+												</Badge>
+											{/if}
+										{/if}
 										<Button
 											variant="ghost"
 											size="sm"
@@ -439,11 +489,11 @@
 											variant="ghost"
 											size="sm"
 											class="h-7 px-2 text-xs text-primary hover:bg-primary/10"
-											disabled={testingModelId === m.id || isTestingAll}
+											disabled={testingModelIds.includes(m.id)}
 											onclick={() => handleTestModel(m.id)}
 											title={`Send empty prompt ping to ${m.id}`}
 										>
-											{#if testingModelId === m.id}
+											{#if testingModelIds.includes(m.id)}
 												<RefreshCwIcon data-icon="inline-start" class="size-3 animate-spin" />
 												Testing
 											{:else}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"lun-router/internal/antigravity"
@@ -174,21 +175,22 @@ func (h *CompletionHandler) UpdateProviderModels(w http.ResponseWriter, r *http.
 	})
 }
 
-// POST /api/models/test (Ping model with minimal probe like 9router to check if it works)
-func (h *CompletionHandler) TestModel(w http.ResponseWriter, r *http.Request) {
-	var payload struct {
-		Model  string `json:"model"`
-		Prompt string `json:"prompt"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Model == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Model identifier required"})
-		return
-	}
+type ModelTestResult struct {
+	OK        bool   `json:"ok"`
+	Model     string `json:"model"`
+	LatencyMs int64  `json:"latency_ms"`
+	Error     string `json:"error,omitempty"`
+	Status    int    `json:"status,omitempty"`
+}
 
-	model := payload.Model
-	prompt := payload.Prompt
+type ModelTestPayload struct {
+	Model       string   `json:"model,omitempty"`
+	Models      []string `json:"models,omitempty"`
+	Prompt      string   `json:"prompt,omitempty"`
+	Concurrency int      `json:"concurrency,omitempty"`
+}
+
+func (h *CompletionHandler) pingSingleModel(ctx context.Context, model string, prompt string, customSession string) ModelTestResult {
 	if prompt == "" {
 		prompt = "ping"
 	}
@@ -197,27 +199,23 @@ func (h *CompletionHandler) TestModel(w http.ResponseWriter, r *http.Request) {
 	if antigravity.IsAntigravityModel(model) {
 		cleanModel := antigravity.CleanModelID(model)
 		if h.modelStore != nil && h.modelStore.IsDisabled("antigravity", cleanModel) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":         false,
-				"model":      model,
-				"error":      fmt.Sprintf("Model '%s' is disabled for provider antigravity", model),
-				"latency_ms": 0,
-			})
-			return
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     fmt.Sprintf("Model '%s' is disabled for provider antigravity", model),
+				LatencyMs: 0,
+			}
 		}
 
 		if h.agClient == nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":    false,
-				"model": model,
-				"error": "Antigravity provider not initialized",
-			})
-			return
+			return ModelTestResult{
+				OK:    false,
+				Model: model,
+				Error: "Antigravity provider not initialized",
+			}
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		mCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 
 		start := time.Now()
@@ -228,56 +226,47 @@ func (h *CompletionHandler) TestModel(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		upResp, err := h.agClient.ExecuteChat(ctx, testBody, false)
+		upResp, err := h.agClient.ExecuteChat(mCtx, testBody, false)
+		latencyMs := time.Since(start).Milliseconds()
 		if err != nil {
-			latencyMs := time.Since(start).Milliseconds()
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":         false,
-				"model":      model,
-				"error":      err.Error(),
-				"latency_ms": latencyMs,
-			})
-			return
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     err.Error(),
+				LatencyMs: latencyMs,
+			}
 		}
 		defer upResp.Body.Close()
 
-		latencyMs := time.Since(start).Milliseconds()
 		if upResp.StatusCode != http.StatusOK {
 			bodyBytes, _ := io.ReadAll(upResp.Body)
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"ok":         false,
-				"model":      model,
-				"error":      string(bodyBytes),
-				"latency_ms": latencyMs,
-				"status":     upResp.StatusCode,
-			})
-			return
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     string(bodyBytes),
+				LatencyMs: latencyMs,
+				Status:    upResp.StatusCode,
+			}
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":         true,
-			"model":      model,
-			"latency_ms": latencyMs,
-		})
-		return
+		return ModelTestResult{
+			OK:        true,
+			Model:     model,
+			LatencyMs: latencyMs,
+		}
 	}
 
 	// OpenCode Model Test
 	if h.modelStore != nil && h.modelStore.IsDisabled("opencode", model) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":         false,
-			"model":      model,
-			"error":      fmt.Sprintf("Model '%s' is disabled", model),
-			"latency_ms": 0,
-		})
-		return
+		return ModelTestResult{
+			OK:        false,
+			Model:     model,
+			Error:     fmt.Sprintf("Model '%s' is disabled", model),
+			LatencyMs: 0,
+		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	mCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	start := time.Now()
@@ -291,27 +280,19 @@ func (h *CompletionHandler) TestModel(w http.ResponseWriter, r *http.Request) {
 		"max_output_tokens": 16,
 	}
 
-	customSession := r.Header.Get("x-opencode-session")
-	if customSession == "" {
-		customSession = r.Header.Get("x-opencode-session-id")
-	}
-
-	upResp, err := h.client.ExecuteChat(ctx, testBody, "model-test", customSession)
+	upResp, err := h.client.ExecuteChat(mCtx, testBody, "model-test", customSession)
+	latencyMs := time.Since(start).Milliseconds()
 	if err != nil {
-		latencyMs := time.Since(start).Milliseconds()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":         false,
-			"model":      model,
-			"error":      err.Error(),
-			"latency_ms": latencyMs,
-		})
-		return
+		return ModelTestResult{
+			OK:        false,
+			Model:     model,
+			Error:     err.Error(),
+			LatencyMs: latencyMs,
+		}
 	}
 	defer upResp.Body.Close()
 
 	if upResp.StatusCode != http.StatusOK {
-		latencyMs := time.Since(start).Milliseconds()
 		bodyBytes, _ := io.ReadAll(upResp.Body)
 		var errObj struct {
 			Error struct {
@@ -322,28 +303,100 @@ func (h *CompletionHandler) TestModel(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(bodyBytes, &errObj) == nil && errObj.Error.Message != "" {
 			errMsg = errObj.Error.Message
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":         false,
-			"model":      model,
-			"error":      errMsg,
-			"latency_ms": latencyMs,
-			"status":     upResp.StatusCode,
-		})
-		return
+		return ModelTestResult{
+			OK:        false,
+			Model:     model,
+			Error:     errMsg,
+			LatencyMs: latencyMs,
+			Status:    upResp.StatusCode,
+		}
 	}
 
 	// Read initial stream byte to confirm TTFT
 	reader := bufio.NewReader(upResp.Body)
 	_, _ = reader.ReadBytes('\n')
-	latencyMs := time.Since(start).Milliseconds()
+	latencyMs = time.Since(start).Milliseconds()
 
+	return ModelTestResult{
+		OK:        true,
+		Model:     model,
+		LatencyMs: latencyMs,
+	}
+}
+
+// POST /api/models/test (Ping model or batch of models)
+func (h *CompletionHandler) TestModel(w http.ResponseWriter, r *http.Request) {
+	var payload ModelTestPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Invalid request body"})
+		return
+	}
+
+	customSession := r.Header.Get("x-opencode-session")
+	if customSession == "" {
+		customSession = r.Header.Get("x-opencode-session-id")
+	}
+
+	// Batch mode
+	if len(payload.Models) > 0 {
+		concurrency := payload.Concurrency
+		if concurrency <= 0 {
+			concurrency = 4
+		} else if concurrency > 10 {
+			concurrency = 10
+		}
+
+		results := make([]ModelTestResult, len(payload.Models))
+		sem := make(chan struct{}, concurrency)
+		var wg sync.WaitGroup
+
+		for i, m := range payload.Models {
+			wg.Add(1)
+			go func(idx int, modelID string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				results[idx] = h.pingSingleModel(r.Context(), modelID, payload.Prompt, customSession)
+			}(i, m)
+		}
+
+		wg.Wait()
+
+		passed := 0
+		failed := 0
+		for _, res := range results {
+			if res.OK {
+				passed++
+			} else {
+				failed++
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      failed == 0,
+			"results": results,
+			"total":   len(results),
+			"passed":  passed,
+			"failed":  failed,
+		})
+		return
+	}
+
+	// Single model mode
+	if payload.Model == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Model or models identifier required"})
+		return
+	}
+
+	res := h.pingSingleModel(r.Context(), payload.Model, payload.Prompt, customSession)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":         true,
-		"model":      model,
-		"latency_ms": latencyMs,
-	})
+	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (h *CompletionHandler) fetchAllModels(r *http.Request) []ModelItem {

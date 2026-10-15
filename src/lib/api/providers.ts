@@ -8,6 +8,14 @@ export interface ModelPingResult {
 	status?: number;
 }
 
+export interface BatchPingResult {
+	ok: boolean;
+	results: ModelPingResult[];
+	total: number;
+	passed: number;
+	failed: number;
+}
+
 export interface FetchModelsResult {
 	models: ProviderModel[];
 	version: string;
@@ -77,6 +85,20 @@ export async function pingModel(model: string, prompt: string = ''): Promise<Mod
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ model, prompt })
+	});
+	return res.json();
+}
+
+// Ping batch of models concurrently
+export async function pingModelsBatch(
+	models: string[],
+	concurrency: number = 4,
+	prompt: string = ''
+): Promise<BatchPingResult> {
+	const res = await fetch('/api/models/test', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ models, concurrency, prompt })
 	});
 	return res.json();
 }
