@@ -9,17 +9,19 @@ import (
 	"lun-router/internal/antigravity"
 	"lun-router/internal/caveman"
 	"lun-router/internal/opencode"
+	"lun-router/internal/ponytail"
 	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
 
-func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, cavemanSvc *caveman.Service, staticFS ...fs.FS) http.Handler {
+func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, staticFS ...fs.FS) http.Handler {
 	mux := http.NewServeMux()
 
 	keyH := NewKeyHandler(ks)
-	compH := NewCompletionHandler(ks, ms, client, agClient, rtkSvc, cavemanSvc)
+	compH := NewCompletionHandler(ks, ms, client, agClient, rtkSvc, cavemanSvc, ponytailSvc)
 	rtkH := NewRTKHandler(rtkSvc)
 	caveH := NewCavemanHandler(cavemanSvc)
+	ponyH := NewPonytailHandler(ponytailSvc)
 
 	// API Keys Management
 	mux.HandleFunc("GET /api/health", keyH.Health)
@@ -44,6 +46,12 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	mux.HandleFunc("PUT /api/caveman", caveH.UpdateConfig)
 	mux.HandleFunc("POST /api/caveman/sync", caveH.SyncUpstream)
 	mux.HandleFunc("POST /api/caveman/test", caveH.TestPrompt)
+
+	// Ponytail Routes (Lazy Senior Developer & Anti-Bloat)
+	mux.HandleFunc("GET /api/ponytail", ponyH.GetStatus)
+	mux.HandleFunc("PUT /api/ponytail", ponyH.UpdateConfig)
+	mux.HandleFunc("POST /api/ponytail/sync", ponyH.SyncUpstream)
+	mux.HandleFunc("POST /api/ponytail/test", ponyH.TestPrompt)
 
 	// OpenCode Free API Routes (Issue #4781 bypass)
 	mux.HandleFunc("GET /v1/models", compH.Models)

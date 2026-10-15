@@ -13,6 +13,7 @@ import (
 	"lun-router/internal/caveman"
 	"lun-router/internal/handler"
 	"lun-router/internal/opencode"
+	"lun-router/internal/ponytail"
 	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
@@ -57,6 +58,11 @@ func main() {
 		log.Fatalf("Failed to initialize Caveman Service: %v", err)
 	}
 
+	ponytailSvc, err := ponytail.NewService(dataDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize Ponytail Service: %v", err)
+	}
+
 	vm := opencode.NewVersionManager(dataDir, 2*time.Hour)
 	vm.StartBackgroundSync(context.Background())
 
@@ -67,7 +73,7 @@ func main() {
 		log.Fatalf("Failed to load embedded frontend: %v", err)
 	}
 
-	router := handler.NewRouter(ks, ms, client, agClient, rtkSvc, cavemanSvc, distFS)
+	router := handler.NewRouter(ks, ms, client, agClient, rtkSvc, cavemanSvc, ponytailSvc, distFS)
 
 	log.Printf("Lun Router Go backend running on :%s (opencode version: %s, data dir: %s)", port, vm.GetVersion(), dataDir)
 	if err := http.ListenAndServe(":"+port, router); err != nil {

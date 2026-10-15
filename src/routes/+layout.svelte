@@ -7,6 +7,7 @@
 	import { providerState } from '$lib/state/provider.svelte';
 	import { antigravityState } from '$lib/state/antigravity.svelte';
 	import { rtkState } from '$lib/state/rtk.svelte';
+	import { ponytailState } from '$lib/state/ponytail.svelte';
 	import Sidebar from '$lib/components/sidebar/sidebar.svelte';
 	import Navbar from '$lib/components/navbar/navbar.svelte';
 	import * as Alert from '$lib/components/ui/alert';
@@ -35,6 +36,7 @@
 		providerState.load();
 		antigravityState.load();
 		rtkState.load();
+		ponytailState.load();
 	});
 </script>
 

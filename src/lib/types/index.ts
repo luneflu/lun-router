@@ -138,3 +138,39 @@ export interface CavemanTestResult {
 	estimated_savings: string;
 	timestamp: string;
 }
+
+export interface PonytailModeInfo {
+	id: string;
+	name: string;
+	description: string;
+}
+
+export interface PonytailStats {
+	total_requests: number;
+	injected_requests: number;
+}
+
+export interface PonytailStatus {
+	enabled: boolean;
+	mode: string;
+	auto_update: boolean;
+	last_sync: string | null;
+	upstream_commit: string;
+	upstream_commit_msg: string;
+	upstream_commit_date: string;
+	upstream_url: string;
+	active_prompt: string;
+	available_modes: PonytailModeInfo[];
+	custom_prompt?: string;
+	stats: PonytailStats;
+}
+
+export interface PonytailTestResult {
+	applied: boolean;
+	provider?: string;
+	model?: string;
+	mode: string;
+	injected_prompt: string;
+	messages: Array<{ role: string; content: string }>;
+	timestamp: string;
+}

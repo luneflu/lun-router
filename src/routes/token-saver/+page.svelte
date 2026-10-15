@@ -3,24 +3,28 @@
 	import { page } from '$app/state';
 	import RtkCard from '$lib/components/tokensaver/rtk-card.svelte';
 	import CavemanCard from '$lib/components/tokensaver/caveman-card.svelte';
+	import PonytailCard from '$lib/components/tokensaver/ponytail-card.svelte';
 	import { rtkState } from '$lib/state/rtk.svelte';
 	import { cavemanState } from '$lib/state/caveman.svelte';
+	import { ponytailState } from '$lib/state/ponytail.svelte';
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import BotIcon from '@lucide/svelte/icons/bot';
+	import ScissorsIcon from '@lucide/svelte/icons/scissors';
 	import { Badge } from '$lib/components/ui/badge';
 
-	let activeTab = $state<'rtk' | 'caveman'>('rtk');
+	let activeTab = $state<'rtk' | 'caveman' | 'ponytail'>('rtk');
 
 	onMount(() => {
 		const tabParam = page.url.searchParams.get('tab');
-		if (tabParam === 'caveman' || tabParam === 'rtk') {
+		if (tabParam === 'caveman' || tabParam === 'rtk' || tabParam === 'ponytail') {
 			activeTab = tabParam;
 		}
 		rtkState.load();
 		cavemanState.load();
+		ponytailState.load();
 	});
 
-	function selectTab(tab: 'rtk' | 'caveman') {
+	function selectTab(tab: 'rtk' | 'caveman' | 'ponytail') {
 		activeTab = tab;
 		const url = new URL(window.location.href);
 		url.searchParams.set('tab', tab);
@@ -33,8 +37,8 @@
 		<div>
 			<h1 class="text-2xl font-bold tracking-tight">Token Saver</h1>
 			<p class="text-sm text-muted-foreground">
-				Dual-engine context & token compression: shrink tool outputs with RTK, cut output tokens
-				with Caveman.
+				Multi-engine context & token compression: compact tool outputs with RTK, cut output tokens
+				with Caveman, and eliminate code bloat with Ponytail.
 			</p>
 		</div>
 	</div>
@@ -78,6 +82,25 @@
 				{cavemanState.enabled ? cavemanState.mode : 'Off'}
 			</Badge>
 		</button>
+
+		<button
+			type="button"
+			onclick={() => selectTab('ponytail')}
+			class={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+				activeTab === 'ponytail'
+					? 'border-primary text-foreground'
+					: 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'
+			}`}
+		>
+			<ScissorsIcon class="h-4 w-4 text-emerald-500" />
+			<span>Ponytail (Lazy Senior Dev)</span>
+			<Badge
+				variant={ponytailState.enabled ? 'default' : 'secondary'}
+				class="ml-1 h-4 px-1.5 py-0 text-[10px]"
+			>
+				{ponytailState.enabled ? ponytailState.mode : 'Off'}
+			</Badge>
+		</button>
 	</div>
 
 	<!-- Tab Content Panes -->
@@ -85,5 +108,7 @@
 		<RtkCard />
 	{:else if activeTab === 'caveman'}
 		<CavemanCard />
+	{:else if activeTab === 'ponytail'}
+		<PonytailCard />
 	{/if}
 </div>

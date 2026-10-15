@@ -13,30 +13,33 @@ import (
 	"lun-router/internal/antigravity"
 	"lun-router/internal/caveman"
 	"lun-router/internal/opencode"
+	"lun-router/internal/ponytail"
 	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
 
 type CompletionHandler struct {
-	store          *store.KeyStore
-	modelStore     *store.ModelStore
-	client         *opencode.Client
-	agClient       *antigravity.Client
-	rtkService     *rtk.Service
-	cavemanService *caveman.Service
+	store           *store.KeyStore
+	modelStore      *store.ModelStore
+	client          *opencode.Client
+	agClient        *antigravity.Client
+	rtkService      *rtk.Service
+	cavemanService  *caveman.Service
+	ponytailService *ponytail.Service
 }
 
-func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, cavemanSvc *caveman.Service) *CompletionHandler {
+func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service) *CompletionHandler {
 	if client == nil {
 		client = opencode.NewClient("", nil)
 	}
 	return &CompletionHandler{
-		store:          s,
-		modelStore:     ms,
-		client:         client,
-		agClient:       agClient,
-		rtkService:     rtkSvc,
-		cavemanService: cavemanSvc,
+		store:           s,
+		modelStore:      ms,
+		client:          client,
+		agClient:        agClient,
+		rtkService:      rtkSvc,
+		cavemanService:  cavemanSvc,
+		ponytailService: ponytailSvc,
 	}
 }
 
@@ -447,6 +450,16 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 	if h.cavemanService != nil {
 		h.cavemanService.Apply(bodyMap, headerCaveman, headerMode)
+	}
+
+	// Ponytail lazy senior developer mode (minimal code, anti-bloat)
+	headerPonytail := r.Header.Get("X-Ponytail")
+	headerPonytailMode := r.Header.Get("X-Ponytail-Mode")
+	if clientOptOut {
+		headerPonytail = "off"
+	}
+	if h.ponytailService != nil {
+		h.ponytailService.Apply(bodyMap, headerPonytail, headerPonytailMode)
 	}
 
 	// Check if this is an Antigravity model
