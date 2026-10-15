@@ -215,8 +215,6 @@
 						<span>Token Saver</span>
 					</div>
 				</div>
-
-				<Badge variant="secondary" class="font-mono text-[9px]">RTK</Badge>
 			</a>
 		</div>
 	</div>
