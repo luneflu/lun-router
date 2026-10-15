@@ -7,17 +7,19 @@ import (
 	"strings"
 
 	"lun-router/internal/antigravity"
+	"lun-router/internal/caveman"
 	"lun-router/internal/opencode"
 	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
 
-func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, staticFS ...fs.FS) http.Handler {
+func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, cavemanSvc *caveman.Service, staticFS ...fs.FS) http.Handler {
 	mux := http.NewServeMux()
 
 	keyH := NewKeyHandler(ks)
-	compH := NewCompletionHandler(ks, ms, client, agClient, rtkSvc)
+	compH := NewCompletionHandler(ks, ms, client, agClient, rtkSvc, cavemanSvc)
 	tsH := NewTokenSaverHandler(rtkSvc)
+	caveH := NewCavemanHandler(cavemanSvc)
 
 	// API Keys Management
 	mux.HandleFunc("GET /api/health", keyH.Health)
@@ -32,6 +34,12 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	mux.HandleFunc("GET /api/tokensaver", tsH.GetStatus)
 	mux.HandleFunc("PUT /api/tokensaver", tsH.Update)
 	mux.HandleFunc("POST /api/tokensaver/test", tsH.TestCompress)
+
+	// Caveman Routes (Prompt & Voice Optimization)
+	mux.HandleFunc("GET /api/caveman", caveH.GetStatus)
+	mux.HandleFunc("PUT /api/caveman", caveH.UpdateConfig)
+	mux.HandleFunc("POST /api/caveman/sync", caveH.SyncUpstream)
+	mux.HandleFunc("POST /api/caveman/test", caveH.TestPrompt)
 
 	// OpenCode Free API Routes (Issue #4781 bypass)
 	mux.HandleFunc("GET /v1/models", compH.Models)

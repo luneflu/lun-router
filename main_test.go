@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"lun-router/internal/antigravity"
+	"lun-router/internal/caveman"
 	"lun-router/internal/handler"
 	"lun-router/internal/model"
 	"lun-router/internal/opencode"
@@ -41,7 +42,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 		t.Fatalf("NewModelStore: %v", err)
 	}
 
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -213,7 +214,7 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 
 	ms, _ := store.NewModelStore(tempDir)
 	mockClient := opencode.NewClient(mockUpstream.URL, nil)
-	routerServer := httptest.NewServer(handler.NewRouter(ks, ms, mockClient, nil, nil))
+	routerServer := httptest.NewServer(handler.NewRouter(ks, ms, mockClient, nil, nil, nil))
 	defer routerServer.Close()
 
 	client := routerServer.Client()
@@ -355,7 +356,7 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 	key, _ := ks.Create("Live Test Key", "sk-live-key")
 
 	ms, _ := store.NewModelStore(tempDir)
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil))
 	defer server.Close()
 
 	payload := map[string]any{
@@ -404,7 +405,7 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 
 // Test /v1/models endpoint
 func TestOpenCodeModelsEndpoint(t *testing.T) {
-	compH := handler.NewCompletionHandler(nil, nil, nil, nil, nil)
+	compH := handler.NewCompletionHandler(nil, nil, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/models", compH.Models)
 	server := httptest.NewServer(mux)
@@ -444,7 +445,7 @@ func TestOpenCodeModelEnableDisable(t *testing.T) {
 	ms, _ := store.NewModelStore(tempDir)
 	key, _ := ks.Create("Admin Key", "sk-test-admin-key")
 
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -612,7 +613,7 @@ func TestOpenCodeSessionRotationOnRateLimit(t *testing.T) {
 	key, _ := ks.Create("Rate Limit Test Key", "sk-ratelimit-key-1")
 
 	client := opencode.NewClient(mockUpstream.URL, nil)
-	router := handler.NewRouter(ks, ms, client, nil, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -708,7 +709,7 @@ func TestOpenCodeModelTestPing(t *testing.T) {
 	ms, _ := store.NewModelStore(tempDir)
 	client := opencode.NewClient(mockUpstream.URL, nil)
 
-	router := handler.NewRouter(ks, ms, client, nil, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -785,7 +786,7 @@ func TestOpenCodeVersionManager(t *testing.T) {
 	ks, _ := store.NewKeyStore(tempDir)
 	ms, _ := store.NewModelStore(tempDir)
 	client := opencode.NewClient("", vm2)
-	router := handler.NewRouter(ks, ms, client, nil, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -815,7 +816,7 @@ func TestSPAStaticServing(t *testing.T) {
 		},
 	}
 
-	router := handler.NewRouter(nil, nil, nil, nil, nil, mockFS)
+	router := handler.NewRouter(nil, nil, nil, nil, nil, nil, mockFS)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -955,7 +956,7 @@ func TestResponsesStreamTranslation(t *testing.T) {
 	defer upstream.Close()
 
 	client := opencode.NewClient(upstream.URL, nil)
-	router := handler.NewRouter(nil, nil, client, nil, nil)
+	router := handler.NewRouter(nil, nil, client, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1011,7 +1012,7 @@ func TestResponsesStreamTranslation(t *testing.T) {
 	}
 }
 
-func TestAntigravityAccountsAndProvider(t *testing.T) {
+	func TestAntigravityAccountsAndProvider(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "lun-antigravity-test-*")
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
@@ -1023,7 +1024,7 @@ func TestAntigravityAccountsAndProvider(t *testing.T) {
 	agStore, _ := antigravity.NewAccountStore(tempDir)
 	agClient := antigravity.NewClient(agStore)
 
-	router := handler.NewRouter(ks, ms, nil, agClient, nil)
+	router := handler.NewRouter(ks, ms, nil, agClient, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1170,7 +1171,7 @@ func TestAntigravityQuotaTracker(t *testing.T) {
 	agStore, _ := antigravity.NewAccountStore(tempDir)
 	agClient := antigravity.NewClient(agStore)
 
-	router := handler.NewRouter(ks, ms, nil, agClient, nil)
+	router := handler.NewRouter(ks, ms, nil, agClient, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1243,7 +1244,7 @@ func TestTokenSaverRTKWorkflow(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	router := handler.NewRouter(ks, ms, nil, nil, rtkSvc)
+	router := handler.NewRouter(ks, ms, nil, nil, rtkSvc, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1330,5 +1331,93 @@ func TestTokenSaverRTKWorkflow(t *testing.T) {
 
 	if !updateResp.RTKEnabled {
 		t.Errorf("expected rtk_enabled to be true after second toggle")
+	}
+}
+
+func TestCavemanWorkflow(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-caveman-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	cavemanSvc, err := caveman.NewService(tempDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer cavemanSvc.Close()
+
+	router := handler.NewRouter(ks, ms, nil, nil, nil, cavemanSvc)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := server.Client()
+
+	// 1. GET /api/caveman status
+	resp, err := client.Get(server.URL + "/api/caveman")
+	if err != nil {
+		t.Fatalf("GET /api/caveman: %v", err)
+	}
+	var statusResp caveman.StatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
+		t.Fatalf("decode caveman status: %v", err)
+	}
+	resp.Body.Close()
+
+	if !statusResp.Enabled {
+		t.Errorf("expected enabled to be true initially")
+	}
+	if statusResp.Mode != "caveman" {
+		t.Errorf("expected mode caveman, got %s", statusResp.Mode)
+	}
+	if len(statusResp.AvailableModes) < 3 {
+		t.Errorf("expected at least 3 available modes")
+	}
+
+	// 2. POST /api/caveman/test
+	testPayload, _ := json.Marshal(map[string]string{
+		"mode":        "ultracave",
+		"user_prompt": "Why is React re-rendering constantly?",
+	})
+	resp, err = client.Post(server.URL+"/api/caveman/test", "application/json", bytes.NewReader(testPayload))
+	if err != nil {
+		t.Fatalf("POST /api/caveman/test: %v", err)
+	}
+	var testResult struct {
+		Applied        bool   `json:"applied"`
+		Mode           string `json:"mode"`
+		InjectedPrompt string `json:"injected_prompt"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&testResult); err != nil {
+		t.Fatalf("decode test response: %v", err)
+	}
+	resp.Body.Close()
+
+	if !testResult.Applied {
+		t.Errorf("expected test prompt to be applied")
+	}
+	if !strings.Contains(testResult.InjectedPrompt, "Ultracave is caveman") {
+		t.Errorf("expected ultracave prompt in injected output")
+	}
+
+	// 3. PUT /api/caveman update config
+	newMode := "ultracave"
+	updatePayload, _ := json.Marshal(map[string]any{
+		"mode": newMode,
+	})
+	req, _ := http.NewRequest("PUT", server.URL+"/api/caveman", bytes.NewReader(updatePayload))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /api/caveman: %v", err)
+	}
+	var updated caveman.StatusResponse
+	_ = json.NewDecoder(resp.Body).Decode(&updated)
+	resp.Body.Close()
+
+	if updated.Mode != "ultracave" {
+		t.Errorf("expected updated mode to be ultracave, got %s", updated.Mode)
 	}
 }

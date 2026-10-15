@@ -11,29 +11,32 @@ import (
 	"time"
 
 	"lun-router/internal/antigravity"
+	"lun-router/internal/caveman"
 	"lun-router/internal/opencode"
 	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
 
 type CompletionHandler struct {
-	store      *store.KeyStore
-	modelStore *store.ModelStore
-	client     *opencode.Client
-	agClient   *antigravity.Client
-	rtkService *rtk.Service
+	store          *store.KeyStore
+	modelStore     *store.ModelStore
+	client         *opencode.Client
+	agClient       *antigravity.Client
+	rtkService     *rtk.Service
+	cavemanService *caveman.Service
 }
 
-func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service) *CompletionHandler {
+func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, cavemanSvc *caveman.Service) *CompletionHandler {
 	if client == nil {
 		client = opencode.NewClient("", nil)
 	}
 	return &CompletionHandler{
-		store:      s,
-		modelStore: ms,
-		client:     client,
-		agClient:   agClient,
-		rtkService: rtkSvc,
+		store:          s,
+		modelStore:     ms,
+		client:         client,
+		agClient:       agClient,
+		rtkService:     rtkSvc,
+		cavemanService: cavemanSvc,
 	}
 }
 
@@ -432,6 +435,16 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	if h.rtkService != nil {
 		h.rtkService.ProcessBody(bodyMap, clientOptOut)
+	}
+
+	// Caveman voice & prompt optimization (say less, cut output tokens)
+	headerCaveman := r.Header.Get("X-Caveman")
+	headerMode := r.Header.Get("X-Caveman-Mode")
+	if clientOptOut {
+		headerCaveman = "off"
+	}
+	if h.cavemanService != nil {
+		h.cavemanService.Apply(bodyMap, headerCaveman, headerMode)
 	}
 
 	// Check if this is an Antigravity model

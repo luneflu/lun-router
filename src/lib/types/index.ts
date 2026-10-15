@@ -93,3 +93,41 @@ export interface TokenSaverTestResult {
 	saved_percent: number;
 	output: string;
 }
+
+export interface CavemanModeInfo {
+	id: string;
+	name: string;
+	description: string;
+	tokens_est: number;
+}
+
+export interface CavemanStats {
+	total_requests: number;
+	injected_requests: number;
+	estimated_saved_pct: number;
+}
+
+export interface CavemanStatus {
+	enabled: boolean;
+	mode: string;
+	auto_update: boolean;
+	last_sync: string | null;
+	upstream_commit: string;
+	upstream_commit_msg: string;
+	upstream_commit_date: string;
+	upstream_url: string;
+	active_prompt: string;
+	available_modes: CavemanModeInfo[];
+	custom_prompt?: string;
+	stats: CavemanStats;
+}
+
+export interface CavemanTestResult {
+	applied: boolean;
+	mode: string;
+	injected_prompt: string;
+	messages: Array<{ role: string; content: string }>;
+	prompt_tokens_est: number;
+	estimated_savings: string;
+	timestamp: string;
+}
