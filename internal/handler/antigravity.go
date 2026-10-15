@@ -222,7 +222,8 @@ func (h *AntigravityHandler) GetOAuthURL(w http.ResponseWriter, r *http.Request)
 // GET /api/providers/antigravity/models
 func (h *AntigravityHandler) ListModels(w http.ResponseWriter, r *http.Request) {
 	var models []ModelItem
-	for _, m := range antigravity.CatalogModels {
+	catalog := h.client.GetCatalogModels()
+	for _, m := range catalog {
 		enabled := h.modelStore == nil || !h.modelStore.IsDisabled("antigravity", m)
 		item := ModelItem{
 			ID:      m,
@@ -239,6 +240,33 @@ func (h *AntigravityHandler) ListModels(w http.ResponseWriter, r *http.Request) 
 		"provider": "antigravity",
 		"version":  "2.11.0",
 		"models":   models,
+	})
+}
+
+// POST /api/providers/antigravity/models/refresh (Sync latest models from Google Cloud Code)
+func (h *AntigravityHandler) RefreshModels(w http.ResponseWriter, r *http.Request) {
+	if h.client == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Antigravity client not initialized"})
+		return
+	}
+
+	models, updated, err := h.client.FetchAvailableModels(r.Context())
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      false,
+			"error":   err.Error(),
+			"count":   len(models),
+			"updated": false,
+		})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"count":   len(models),
+		"updated": updated,
 	})
 }
 

@@ -61,7 +61,7 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 
 	// Antigravity models
 	if h.agClient != nil {
-		for _, m := range antigravity.CatalogModels {
+		for _, m := range h.agClient.GetCatalogModels() {
 			if h.modelStore == nil || !h.modelStore.IsDisabled("antigravity", m) {
 				item := ModelItem{
 					ID:      m,
@@ -100,6 +100,33 @@ func (h *CompletionHandler) ProviderModels(w http.ResponseWriter, r *http.Reques
 		"provider": "opencode",
 		"version":  version,
 		"models":   rawModels,
+	})
+}
+
+// POST /api/providers/opencode/models/refresh (Sync latest models from OpenCode Free upstream)
+func (h *CompletionHandler) RefreshOpenCodeModels(w http.ResponseWriter, r *http.Request) {
+	if h.client == nil || h.client.ModelManager() == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "Model manager not initialized"})
+		return
+	}
+
+	models, updated, err := h.client.ModelManager().CheckAndUpdate(r.Context())
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      false,
+			"error":   err.Error(),
+			"count":   len(models),
+			"updated": false,
+		})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"count":   len(models),
+		"updated": updated,
 	})
 }
 
@@ -414,9 +441,16 @@ func (h *CompletionHandler) fetchAllModels(r *http.Request) []ModelItem {
 		}
 	}
 
-	// Fallback models if upstream is unreachable
+	// Fallback models from ModelManager or FallbackModels
+	var fallbackIDs []string
+	if h.client != nil && h.client.ModelManager() != nil {
+		fallbackIDs = h.client.ModelManager().GetModels()
+	} else {
+		fallbackIDs = opencode.FallbackModels
+	}
+
 	var list []ModelItem
-	for _, m := range opencode.FallbackModels {
+	for _, m := range fallbackIDs {
 		item := ModelItem{
 			ID:      m,
 			Object:  "model",

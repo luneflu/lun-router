@@ -3,7 +3,8 @@ import {
 	fetchProviderModels,
 	setModelEnabled,
 	setBatchModelsEnabled,
-	refreshOpenCodeVersion
+	refreshOpenCodeVersion,
+	refreshOpenCodeModels
 } from '$lib/api/providers';
 
 export class ProviderState {
@@ -55,6 +56,23 @@ export class ProviderState {
 				ok: false,
 				version: this.version,
 				error: e instanceof Error ? e.message : 'Failed to check version'
+			};
+		}
+	}
+
+	async syncModels() {
+		try {
+			const res = await refreshOpenCodeModels();
+			if (res.ok) {
+				await this.load();
+			}
+			return res;
+		} catch (e: unknown) {
+			return {
+				ok: false,
+				count: this.models.length,
+				updated: false,
+				error: e instanceof Error ? e.message : 'Failed to sync models'
 			};
 		}
 	}

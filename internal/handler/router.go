@@ -62,6 +62,7 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	// Provider Model Management (Enable / Disable)
 	mux.HandleFunc("GET /api/providers/opencode/models", compH.ProviderModels)
 	mux.HandleFunc("PUT /api/providers/opencode/models", compH.UpdateProviderModels)
+	mux.HandleFunc("POST /api/providers/opencode/models/refresh", compH.RefreshOpenCodeModels)
 	mux.HandleFunc("POST /api/providers/opencode/version/refresh", compH.RefreshVersion)
 	mux.HandleFunc("POST /api/models/test", compH.TestModel)
 
@@ -76,6 +77,7 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 		mux.HandleFunc("GET /api/providers/antigravity/oauth/auth-url", agH.GetOAuthURL)
 		mux.HandleFunc("GET /api/providers/antigravity/models", agH.ListModels)
 		mux.HandleFunc("PUT /api/providers/antigravity/models", agH.UpdateModels)
+		mux.HandleFunc("POST /api/providers/antigravity/models/refresh", agH.RefreshModels)
 		mux.HandleFunc("GET /api/providers/antigravity/accounts/{id}/quota", agH.GetAccountQuota)
 		mux.HandleFunc("GET /api/providers/antigravity/quota", agH.GetAllQuotas)
 	}

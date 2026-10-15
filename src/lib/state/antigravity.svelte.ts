@@ -6,6 +6,7 @@ import {
 	deleteAntigravityAccount,
 	refreshAntigravityAccount,
 	fetchAntigravityModels,
+	refreshAntigravityModels,
 	setAntigravityModelEnabled,
 	setAntigravityBatchModelsEnabled,
 	fetchAntigravityQuota,
@@ -70,6 +71,23 @@ export class AntigravityState {
 		const res = await fetchAntigravityModels();
 		this.models = res.models;
 		this.version = res.version;
+	}
+
+	async syncModels() {
+		try {
+			const res = await refreshAntigravityModels();
+			if (res.ok) {
+				await this.loadModels();
+			}
+			return res;
+		} catch (e: unknown) {
+			return {
+				ok: false,
+				count: this.models.length,
+				updated: false,
+				error: e instanceof Error ? e.message : 'Failed to sync models'
+			};
+		}
 	}
 
 	async loadAccounts() {

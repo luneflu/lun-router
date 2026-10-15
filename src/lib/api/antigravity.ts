@@ -124,6 +124,16 @@ export async function getAntigravityOAuthUrl(
 	};
 }
 
+export async function refreshAntigravityModels(): Promise<{
+	ok: boolean;
+	count: number;
+	updated: boolean;
+	error?: string;
+}> {
+	const res = await fetch('/api/providers/antigravity/models/refresh', { method: 'POST' });
+	return res.json();
+}
+
 export async function fetchAntigravityModels(): Promise<{
 	models: ProviderModel[];
 	version: string;

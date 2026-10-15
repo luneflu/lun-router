@@ -40,6 +40,7 @@ type Client struct {
 	httpClient     *http.Client
 	sessionManager *SessionManager
 	versionManager *VersionManager
+	modelManager   *ModelManager
 }
 
 func NewClient(baseURL string, vm *VersionManager) *Client {
@@ -65,13 +66,35 @@ func (c *Client) VersionManager() *VersionManager {
 	return c.versionManager
 }
 
-// FetchModels retrieves the catalog from OpenCode Free
+func (c *Client) ModelManager() *ModelManager {
+	return c.modelManager
+}
+
+func (c *Client) SetModelManager(mm *ModelManager) {
+	c.modelManager = mm
+}
+
+// FetchModels retrieves the catalog from OpenCode Free (uses cached if available)
 func (c *Client) FetchModels(ctx context.Context) ([]byte, error) {
+	if c.modelManager != nil {
+		if raw := c.modelManager.GetRawJSON(); len(raw) > 0 {
+			return raw, nil
+		}
+	}
+	return c.FetchModelsDirect(ctx)
+}
+
+// FetchModelsDirect directly queries upstream OpenCode Free models endpoint
+func (c *Client) FetchModelsDirect(ctx context.Context) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/zen/v1/models", nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", c.versionManager.GetUserAgent())
+	ua := UA
+	if c.versionManager != nil {
+		ua = c.versionManager.GetUserAgent()
+	}
+	req.Header.Set("User-Agent", ua)
 	req.Header.Set("x-opencode-client", ClientType)
 
 	resp, err := c.httpClient.Do(req)

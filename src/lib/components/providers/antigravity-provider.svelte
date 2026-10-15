@@ -38,6 +38,21 @@
 
 	let togglingId = $state<string | null>(null);
 	let bulkToggling = $state(false);
+	let syncingModels = $state(false);
+
+	async function handleSyncModels() {
+		try {
+			syncingModels = true;
+			const res = await antigravityState.syncModels();
+			if (res.ok) {
+				toast.success('Models Synced', `Up to date: ${res.count} models available`);
+			} else {
+				toast.error('Sync Failed', res.error || 'Failed to sync models');
+			}
+		} finally {
+			syncingModels = false;
+		}
+	}
 
 	async function handleToggleModel(model: ProviderModel, checked: boolean) {
 		try {
@@ -201,6 +216,19 @@
 				</div>
 
 				<div class="flex items-center gap-2 self-start sm:self-auto">
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={syncingModels || isTestingAll}
+						onclick={handleSyncModels}
+						title="Sync latest model catalog from Google Cloud Code"
+					>
+						<RefreshCwIcon
+							data-icon="inline-start"
+							class={cn('size-3.5', syncingModels && 'animate-spin')}
+						/>
+						Sync Models
+					</Button>
 					<Button
 						variant="outline"
 						size="sm"

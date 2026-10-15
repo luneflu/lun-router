@@ -45,6 +45,16 @@ export async function refreshOpenCodeVersion(): Promise<{
 	return res.json();
 }
 
+export async function refreshOpenCodeModels(): Promise<{
+	ok: boolean;
+	count: number;
+	updated: boolean;
+	error?: string;
+}> {
+	const res = await fetch('/api/providers/opencode/models/refresh', { method: 'POST' });
+	return res.json();
+}
+
 export async function setModelEnabled(
 	provider: string = 'opencode',
 	model: string,

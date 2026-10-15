@@ -1552,3 +1552,97 @@ func TestPonytailWorkflow(t *testing.T) {
 		t.Errorf("expected updated mode to be lite, got %s", updated.Mode)
 	}
 }
+
+// Test dynamic model sync for OpenCode and Antigravity
+func TestDynamicModelSync(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-sync-models-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Mock OpenCode upstream returning new dynamic models
+	mockOpenCode := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"id": "dynamic-model-alpha"},
+				{"id": "muse-spark-1.3-contributor-free"},
+			},
+		})
+	}))
+	defer mockOpenCode.Close()
+
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	agStore, _ := antigravity.NewAccountStore(tempDir)
+	agClient := antigravity.NewClient(agStore, tempDir)
+
+	vm := opencode.NewVersionManager(tempDir, time.Hour)
+	ocClient := opencode.NewClient(mockOpenCode.URL, vm)
+	mm := opencode.NewModelManager(tempDir, ocClient, time.Hour)
+	ocClient.SetModelManager(mm)
+
+	router := handler.NewRouter(ks, ms, ocClient, agClient, nil, nil, nil)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := server.Client()
+
+	// 1. Trigger OpenCode models refresh
+	resp, err := client.Post(server.URL+"/api/providers/opencode/models/refresh", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST opencode models refresh: %v", err)
+	}
+	var ocRefresh struct {
+		OK      bool `json:"ok"`
+		Count   int  `json:"count"`
+		Updated bool `json:"updated"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&ocRefresh)
+	resp.Body.Close()
+
+	if !ocRefresh.OK || ocRefresh.Count == 0 {
+		t.Errorf("expected successful opencode model refresh, got %+v", ocRefresh)
+	}
+
+	// 2. Confirm dynamic model appears in /v1/models
+	v1Resp, err := client.Get(server.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("GET /v1/models: %v", err)
+	}
+	var v1Data struct {
+		Data []handler.ModelItem `json:"data"`
+	}
+	_ = json.NewDecoder(v1Resp.Body).Decode(&v1Data)
+	v1Resp.Body.Close()
+
+	foundDynamic := false
+	for _, m := range v1Data.Data {
+		if m.ID == "dynamic-model-alpha" {
+			foundDynamic = true
+			if m.Capabilities == nil {
+				t.Errorf("expected capabilities to be enriched for dynamic model")
+			}
+			break
+		}
+	}
+	if !foundDynamic {
+		t.Errorf("expected dynamic-model-alpha to appear in /v1/models after refresh")
+	}
+
+	// 3. Antigravity catalog contains fallback models and exposes refresh
+	agResp, err := client.Get(server.URL + "/api/providers/antigravity/models")
+	if err != nil {
+		t.Fatalf("GET antigravity models: %v", err)
+	}
+	var agData struct {
+		Models []handler.ModelItem `json:"models"`
+	}
+	_ = json.NewDecoder(agResp.Body).Decode(&agData)
+	agResp.Body.Close()
+
+	if len(agData.Models) == 0 {
+		t.Errorf("expected non-empty antigravity models list")
+	}
+}

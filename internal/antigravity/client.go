@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -89,15 +91,206 @@ type Client struct {
 	quotaMu    sync.RWMutex
 	quotaCache map[string]*AccountUsage
 	exhausted  map[string]time.Time
+	modelsMu   sync.RWMutex
+	models     []string
+	modelsFile string
 }
 
-func NewClient(store *AccountStore) *Client {
-	return &Client{
+func NewClient(store *AccountStore, dataDirs ...string) *Client {
+	dataDir := "data"
+	if len(dataDirs) > 0 && dataDirs[0] != "" {
+		dataDir = dataDirs[0]
+	}
+
+	c := &Client{
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 		store:      store,
 		quotaCache: make(map[string]*AccountUsage),
 		exhausted:  make(map[string]time.Time),
+		models:     append([]string{}, CatalogModels...),
+		modelsFile: filepath.Join(dataDir, "antigravity_models.json"),
 	}
+
+	c.loadModelsCache()
+	return c
+}
+
+func (c *Client) loadModelsCache() {
+	if c.modelsFile == "" {
+		return
+	}
+	b, err := os.ReadFile(c.modelsFile)
+	if err != nil {
+		return
+	}
+	var cached struct {
+		Models    []string  `json:"models"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	if err := json.Unmarshal(b, &cached); err == nil && len(cached.Models) > 0 {
+		c.modelsMu.Lock()
+		seen := make(map[string]bool)
+		var merged []string
+		for _, m := range cached.Models {
+			if !seen[m] {
+				seen[m] = true
+				merged = append(merged, m)
+			}
+		}
+		for _, m := range CatalogModels {
+			if !seen[m] {
+				seen[m] = true
+				merged = append(merged, m)
+			}
+		}
+		c.models = merged
+		c.modelsMu.Unlock()
+	}
+}
+
+func (c *Client) saveModelsCache(models []string) {
+	if c.modelsFile == "" {
+		return
+	}
+	cached := struct {
+		Models    []string  `json:"models"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}{
+		Models:    models,
+		UpdatedAt: time.Now(),
+	}
+	b, err := json.MarshalIndent(cached, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(c.modelsFile, b, 0644)
+}
+
+func (c *Client) GetCatalogModels() []string {
+	c.modelsMu.RLock()
+	defer c.modelsMu.RUnlock()
+	res := make([]string, len(c.models))
+	copy(res, c.models)
+	return res
+}
+
+func (c *Client) FetchAvailableModels(ctx context.Context) ([]string, bool, error) {
+	accounts := c.store.ListRaw()
+	if len(accounts) == 0 {
+		return c.GetCatalogModels(), false, fmt.Errorf("no Antigravity accounts configured")
+	}
+
+	var activeAcc *Account
+	for _, a := range accounts {
+		if a != nil && a.IsActive {
+			activeAcc = a
+			break
+		}
+	}
+	if activeAcc == nil {
+		activeAcc = accounts[0]
+	}
+
+	if err := c.EnsureFreshToken(ctx, activeAcc); err != nil {
+		return c.GetCatalogModels(), false, fmt.Errorf("token refresh for account %s: %w", activeAcc.Email, err)
+	}
+
+	reqMap := map[string]any{}
+	if activeAcc.ProjectID != "" {
+		reqMap["project"] = activeAcc.ProjectID
+	}
+	b, _ := json.Marshal(reqMap)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, FetchAvailableModelsURL, bytes.NewReader(b))
+	if err != nil {
+		return c.GetCatalogModels(), false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+activeAcc.AccessToken)
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Client-Name", "antigravity")
+	req.Header.Set("X-Client-Version", "2.11.0")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return c.GetCatalogModels(), false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return c.GetCatalogModels(), false, fmt.Errorf("upstream models status: %d", resp.StatusCode)
+	}
+
+	var raw struct {
+		Models map[string]struct {
+			DisplayName string `json:"displayName"`
+			IsInternal  bool   `json:"isInternal"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return c.GetCatalogModels(), false, err
+	}
+
+	seen := make(map[string]bool)
+	var newModels []string
+
+	for modelID, info := range raw.Models {
+		if info.IsInternal {
+			continue
+		}
+		if strings.HasPrefix(modelID, "chat_") || strings.HasPrefix(modelID, "tab_") {
+			continue
+		}
+		if !seen[modelID] {
+			seen[modelID] = true
+			newModels = append(newModels, modelID)
+		}
+	}
+
+	for _, m := range CatalogModels {
+		if !seen[m] {
+			seen[m] = true
+			newModels = append(newModels, m)
+		}
+	}
+
+	c.modelsMu.Lock()
+	updated := len(newModels) != len(c.models)
+	c.models = newModels
+	c.modelsMu.Unlock()
+
+	if updated {
+		c.saveModelsCache(newModels)
+	}
+
+	return newModels, updated, nil
+}
+
+func (c *Client) StartBackgroundSync(ctx context.Context) {
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(4 * time.Second):
+			if models, updated, err := c.FetchAvailableModels(ctx); err == nil && updated {
+				log.Printf("[Antigravity] Models synced from Google: %d models available", len(models))
+			}
+		}
+
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if models, updated, err := c.FetchAvailableModels(ctx); err == nil && updated {
+					log.Printf("[Antigravity] Models refreshed from Google: %d models available", len(models))
+				}
+			}
+		}
+	}()
 }
 
 func (c *Client) Store() *AccountStore {
@@ -107,6 +300,16 @@ func (c *Client) Store() *AccountStore {
 func IsAntigravityModel(model string) bool {
 	clean := CleanModelID(model)
 	for _, m := range CatalogModels {
+		if m == clean {
+			return true
+		}
+	}
+	return strings.HasPrefix(model, "antigravity/") || strings.HasPrefix(model, "ag/")
+}
+
+func (c *Client) IsAntigravityModel(model string) bool {
+	clean := CleanModelID(model)
+	for _, m := range c.GetCatalogModels() {
 		if m == clean {
 			return true
 		}
@@ -787,6 +990,33 @@ func (c *Client) fetchAvailableModelsQuota(ctx context.Context, accessToken, pro
 
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return
+	}
+
+	// Auto-discover models from response
+	var discovered []string
+	for modelKey, mData := range raw.Models {
+		if !mData.IsInternal && !strings.HasPrefix(modelKey, "chat_") && !strings.HasPrefix(modelKey, "tab_") {
+			discovered = append(discovered, modelKey)
+		}
+	}
+	if len(discovered) > 0 {
+		c.modelsMu.Lock()
+		seen := make(map[string]bool)
+		for _, m := range c.models {
+			seen[m] = true
+		}
+		newAdded := false
+		for _, d := range discovered {
+			if !seen[d] {
+				seen[d] = true
+				c.models = append(c.models, d)
+				newAdded = true
+			}
+		}
+		if newAdded {
+			c.saveModelsCache(c.models)
+		}
+		c.modelsMu.Unlock()
 	}
 
 	for modelKey, mData := range raw.Models {

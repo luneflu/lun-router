@@ -46,7 +46,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize Antigravity AccountStore: %v", err)
 	}
-	agClient := antigravity.NewClient(agStore)
+	agClient := antigravity.NewClient(agStore, dataDir)
+	agClient.StartBackgroundSync(context.Background())
 
 	rtkSvc, err := rtk.NewService(dataDir)
 	if err != nil {
@@ -67,6 +68,9 @@ func main() {
 	vm.StartBackgroundSync(context.Background())
 
 	client := opencode.NewClient("", vm)
+	mm := opencode.NewModelManager(dataDir, client, 1*time.Hour)
+	mm.StartBackgroundSync(context.Background())
+	client.SetModelManager(mm)
 
 	distFS, err := fs.Sub(buildFS, "build")
 	if err != nil {
