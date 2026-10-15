@@ -420,9 +420,7 @@ func TestOpenCodeModelsEndpoint(t *testing.T) {
 		t.Errorf("expected 200 OK, got %d", resp.StatusCode)
 	}
 	var data struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
+		Data []handler.ModelItem `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		t.Fatalf("decode models: %v", err)
@@ -431,6 +429,20 @@ func TestOpenCodeModelsEndpoint(t *testing.T) {
 
 	if len(data.Data) == 0 {
 		t.Errorf("expected non-empty models list")
+	}
+
+	foundReasoning := false
+	for _, m := range data.Data {
+		if m.Capabilities != nil && m.Capabilities.Reasoning {
+			foundReasoning = true
+			if len(m.ThinkingLevels) == 0 {
+				t.Errorf("expected model %s with reasoning to have thinking_levels", m.ID)
+			}
+			break
+		}
+	}
+	if !foundReasoning {
+		t.Errorf("expected at least one reasoning model in /v1/models")
 	}
 }
 

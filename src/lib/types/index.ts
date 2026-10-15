@@ -23,11 +23,26 @@ export interface ChatCompletionRequest {
 	stream?: boolean;
 }
 
+export interface ModelCapabilities {
+	vision?: boolean;
+	tools?: boolean;
+	reasoning?: boolean;
+	thinking_format?: string;
+	thinking_levels?: string[];
+	thinking_can_disable?: boolean;
+	context_window?: number;
+	max_output?: number;
+}
+
 export interface ProviderModel {
 	id: string;
 	object?: string;
 	owned_by?: string;
 	enabled: boolean;
+	capabilities?: ModelCapabilities;
+	thinking_levels?: string[];
+	context_length?: number;
+	max_completion_tokens?: number;
 }
 
 export interface AntigravityAccount {

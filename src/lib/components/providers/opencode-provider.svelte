@@ -378,7 +378,34 @@
 						{#each providerState.filtered as m (m.id)}
 							<Table.Row class={cn(!m.enabled && 'bg-muted/10 opacity-60')}>
 								<Table.Cell class="font-mono text-xs">
-									<span class="font-semibold text-foreground">{m.id}</span>
+									<div class="flex flex-col gap-1">
+										<div class="flex flex-wrap items-center gap-1.5">
+											<span class="font-semibold text-foreground">{m.id}</span>
+											{#if m.thinking_levels && m.thinking_levels.length > 0}
+												<Badge
+													variant="outline"
+													class="border-amber-500/30 bg-amber-500/10 px-1.5 py-0 text-[10px] font-normal text-amber-600 dark:text-amber-400"
+												>
+													Thinking ({m.thinking_levels.filter((l) => l !== 'none').join(', ')})
+												</Badge>
+											{/if}
+											{#if m.capabilities?.vision}
+												<Badge
+													variant="outline"
+													class="border-sky-500/30 bg-sky-500/10 px-1.5 py-0 text-[10px] font-normal text-sky-600 dark:text-sky-400"
+												>
+													Vision
+												</Badge>
+											{/if}
+										</div>
+										{#if m.context_length}
+											<span class="text-[10px] text-muted-foreground">
+												Context: {Math.round(m.context_length / 1000)}k | Max output: {Math.round(
+													(m.max_completion_tokens || 64000) / 1000
+												)}k
+											</span>
+										{/if}
+									</div>
 								</Table.Cell>
 
 								<Table.Cell>

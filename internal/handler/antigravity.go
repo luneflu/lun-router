@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"lun-router/internal/antigravity"
+	"lun-router/internal/model"
 	"lun-router/internal/store"
 )
 
@@ -223,12 +224,14 @@ func (h *AntigravityHandler) ListModels(w http.ResponseWriter, r *http.Request) 
 	var models []ModelItem
 	for _, m := range antigravity.CatalogModels {
 		enabled := h.modelStore == nil || !h.modelStore.IsDisabled("antigravity", m)
-		models = append(models, ModelItem{
+		item := ModelItem{
 			ID:      m,
 			Object:  "model",
 			OwnedBy: "antigravity",
 			Enabled: enabled,
-		})
+		}
+		model.EnrichModelItem(&item, "antigravity")
+		models = append(models, item)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

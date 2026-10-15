@@ -61,6 +61,10 @@
 			: fallbackModels.map((m) => ({ id: m, enabled: true }))
 	);
 
+	let currentModel = $derived(models?.find((m) => m.id === selectedModelId));
+	let thinkingLevels = $derived(currentModel?.thinking_levels || []);
+	let selectedThinkingLevel = $state<string>('auto');
+
 	// Select first enabled model if current selected model is empty or invalid
 	$effect(() => {
 		if (modelList.length > 0) {
@@ -128,11 +132,15 @@
 
 		// Use active key from keystore if available
 		const activeKey = keysState.items.find((k) => k.isActive)?.key;
+		const targetModel =
+			selectedThinkingLevel !== 'auto' && thinkingLevels.includes(selectedThinkingLevel)
+				? `${selectedModelId}(${selectedThinkingLevel})`
+				: selectedModelId;
 
 		try {
 			await sendChatCompletion(
 				{
-					model: selectedModelId,
+					model: targetModel,
 					messages: apiMessages,
 					stream: true
 				},
@@ -246,6 +254,25 @@
 						{/each}
 					</select>
 				</div>
+
+				<!-- Thinking level selector dropdown -->
+				{#if thinkingLevels.length > 0}
+					<div class="flex items-center gap-1">
+						<span class="hidden text-xs text-amber-600 sm:inline dark:text-amber-400"
+							>Thinking:</span
+						>
+						<select
+							bind:value={selectedThinkingLevel}
+							class="h-8 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 font-mono text-xs text-amber-700 shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none dark:text-amber-300"
+							title="Thinking level / reasoning effort"
+						>
+							<option value="auto">auto</option>
+							{#each thinkingLevels as lvl (lvl)}
+								<option value={lvl}>{lvl}</option>
+							{/each}
+						</select>
+					</div>
+				{/if}
 
 				<!-- Clear button -->
 				{#if messages.length > 0}

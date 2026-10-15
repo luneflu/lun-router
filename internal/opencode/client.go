@@ -102,11 +102,33 @@ func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any, identi
 		bodyMap["model"] = model
 	}
 
+	// Normalize thinking suffix if present, e.g. "muse-spark-1.3-contributor-free(high)"
+	var thinkingEffort string
+	if idx := strings.LastIndex(model, "("); idx != -1 && strings.HasSuffix(model, ")") {
+		thinkingEffort = strings.ToLower(strings.TrimSpace(model[idx+1 : len(model)-1]))
+		model = strings.TrimSpace(model[:idx])
+		bodyMap["model"] = model
+	}
+	if effortVal, ok := bodyMap["reasoning_effort"].(string); ok && effortVal != "" {
+		thinkingEffort = strings.ToLower(strings.TrimSpace(effortVal))
+	}
+
 	// Upstream always requires stream: true
 	bodyMap["stream"] = true
 
-	isResponses := strings.HasPrefix(model, "muse-spark")
+	isResponses := strings.Contains(model, "muse-spark")
 	if isResponses {
+		if thinkingEffort != "" {
+			if thinkingEffort == "max" || thinkingEffort == "ultra" {
+				thinkingEffort = "xhigh"
+			}
+			bodyMap["reasoning"] = map[string]any{
+				"effort":  thinkingEffort,
+				"summary": "auto",
+			}
+			delete(bodyMap, "reasoning_effort")
+		}
+
 		if maxTok, hasMax := bodyMap["max_tokens"]; hasMax {
 			if _, hasOutput := bodyMap["max_output_tokens"]; !hasOutput {
 				bodyMap["max_output_tokens"] = maxTok
@@ -160,6 +182,9 @@ func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any, identi
 		delete(bodyMap, "messages")
 		bodyMap["store"] = false
 	} else {
+		if thinkingEffort != "" {
+			bodyMap["reasoning_effort"] = thinkingEffort
+		}
 		delete(bodyMap, "max_output_tokens")
 	}
 

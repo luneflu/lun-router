@@ -12,6 +12,7 @@ import (
 
 	"lun-router/internal/antigravity"
 	"lun-router/internal/caveman"
+	"lun-router/internal/model"
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
 	"lun-router/internal/rtk"
@@ -43,12 +44,8 @@ func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *openc
 	}
 }
 
-type ModelItem struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	OwnedBy string `json:"owned_by"`
-	Enabled bool   `json:"enabled"`
-}
+type ModelItem = model.ModelItem
+type ModelCapabilities = model.ModelCapabilities
 
 // GET /v1/models (OpenAI-compatible catalog: returns only enabled models)
 func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
@@ -65,12 +62,14 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 	if h.agClient != nil {
 		for _, m := range antigravity.CatalogModels {
 			if h.modelStore == nil || !h.modelStore.IsDisabled("antigravity", m) {
-				filtered = append(filtered, ModelItem{
+				item := ModelItem{
 					ID:      m,
 					Object:  "model",
 					OwnedBy: "antigravity",
 					Enabled: true,
-				})
+				}
+				model.EnrichModelItem(&item, "antigravity")
+				filtered = append(filtered, item)
 			}
 		}
 	}
@@ -354,6 +353,10 @@ func (h *CompletionHandler) fetchAllModels(r *http.Request) []ModelItem {
 			Data []ModelItem `json:"data"`
 		}
 		if jsonErr := json.Unmarshal(data, &resp); jsonErr == nil && len(resp.Data) > 0 {
+			for i := range resp.Data {
+				resp.Data[i].OwnedBy = "opencode"
+				model.EnrichModelItem(&resp.Data[i], "opencode")
+			}
 			return resp.Data
 		}
 	}
@@ -361,11 +364,13 @@ func (h *CompletionHandler) fetchAllModels(r *http.Request) []ModelItem {
 	// Fallback models if upstream is unreachable
 	var list []ModelItem
 	for _, m := range opencode.FallbackModels {
-		list = append(list, ModelItem{
+		item := ModelItem{
 			ID:      m,
 			Object:  "model",
-			OwnedBy: "opencode-free",
-		})
+			OwnedBy: "opencode",
+		}
+		model.EnrichModelItem(&item, "opencode")
+		list = append(list, item)
 	}
 	return list
 }
