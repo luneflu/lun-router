@@ -5,6 +5,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
 	import { cavemanState } from '$lib/state/caveman.svelte';
+	import { keysState } from '$lib/state/keys.svelte';
 	import { sendChatCompletion } from '$lib/api/completions';
 	import { fetchProviderModels } from '$lib/api/providers';
 
@@ -20,6 +21,11 @@
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 
+	interface ModelOption {
+		id: string;
+		enabled: boolean;
+	}
+
 	let sampleType = $state<'react' | 'db' | 'go' | 'docker'>('react');
 	let testPrompt = $state(getSample('react'));
 	let copiedPrompt = $state(false);
@@ -29,27 +35,18 @@
 
 	// Provider & Model selection for live testing
 	let selectedProvider = $state<'opencode' | 'antigravity'>('opencode');
-	let selectedModel = $state('big-pickle');
-	let openCodeModels = $state<string[]>([
-		'big-pickle',
-		'muse-spark-1.3-contributor-free',
-		'nemotron-3.5-lightning-free',
-		'cat-jam-free',
-		'mimo-v2.6-flash-free',
-		'space-bunny-free',
-		'deepseek-chat',
-		'gpt-4o',
-		'claude-3-5-sonnet'
+	let selectedModel = $state('muse-spark-1.3-contributor-free');
+	let openCodeModels = $state<ModelOption[]>([
+		{ id: 'muse-spark-1.3-contributor-free', enabled: true },
+		{ id: 'deepseek-v4.1-flash-free', enabled: true },
+		{ id: 'space-bunny-free', enabled: true },
+		{ id: 'big-pickle', enabled: false }
 	]);
-	const antigravityModels = [
-		'gemini-3.8-flash',
-		'gemini-3.8-pro',
-		'gemini-3.8-ultra',
-		'claude-3-7-sonnet',
-		'claude-3-5-sonnet',
-		'gemini-2.5-flash',
-		'gemini-2.5-pro'
-	];
+	let antigravityModels = $state<ModelOption[]>([
+		{ id: 'gemini-3.8-flash-high', enabled: true },
+		{ id: 'claude-sonnet-4-6', enabled: true },
+		{ id: 'gemini-3.8-flash', enabled: false }
+	]);
 
 	// Live model execution state
 	let isLiveRunning = $state(false);
@@ -61,29 +58,47 @@
 	let currentModels = $derived(
 		selectedProvider === 'opencode' ? openCodeModels : antigravityModels
 	);
+	let enabledModels = $derived(currentModels.filter((m) => m.enabled));
+	let disabledModels = $derived(currentModels.filter((m) => !m.enabled));
 
 	onMount(() => {
-		fetchProviderModels('opencode')
-			.then((res) => {
-				if (res.models && res.models.length > 0) {
-					const ids = res.models.filter((m) => m.enabled).map((m) => m.id);
-					if (ids.length > 0) {
-						openCodeModels = Array.from(new Set([...ids, ...openCodeModels]));
-					}
-				}
-			})
-			.catch(() => {
-				// use defaults
-			});
+		keysState.load();
+		loadAllModels();
 	});
+
+	async function loadAllModels() {
+		try {
+			const [ocRes, agRes] = await Promise.allSettled([
+				fetchProviderModels('opencode'),
+				fetchProviderModels('antigravity')
+			]);
+
+			if (ocRes.status === 'fulfilled' && ocRes.value.models.length > 0) {
+				openCodeModels = ocRes.value.models.map((m) => ({ id: m.id, enabled: m.enabled }));
+			}
+			if (agRes.status === 'fulfilled' && agRes.value.models.length > 0) {
+				antigravityModels = agRes.value.models.map((m) => ({ id: m.id, enabled: m.enabled }));
+			}
+
+			pickFirstEnabled();
+		} catch {
+			// fallback
+		}
+	}
+
+	function pickFirstEnabled() {
+		const list = selectedProvider === 'opencode' ? openCodeModels : antigravityModels;
+		const firstEnabled = list.find((m) => m.enabled);
+		if (firstEnabled) {
+			selectedModel = firstEnabled.id;
+		} else if (list.length > 0) {
+			selectedModel = list[0].id;
+		}
+	}
 
 	function handleProviderChange(prov: 'opencode' | 'antigravity') {
 		selectedProvider = prov;
-		if (prov === 'antigravity') {
-			selectedModel = 'gemini-3.8-flash';
-		} else {
-			selectedModel = 'big-pickle';
-		}
+		pickFirstEnabled();
 	}
 
 	function getSample(type: 'react' | 'db' | 'go' | 'docker'): string {
@@ -131,13 +146,15 @@
 		const start = performance.now();
 
 		try {
-			await sendChatCompletion(
+			const activeKey = keysState.items.find((k) => k.isActive)?.key;
+
+			const full = await sendChatCompletion(
 				{
 					model: selectedModel,
 					messages: [{ role: 'user', content: testPrompt }],
 					stream: true
 				},
-				undefined,
+				activeKey,
 				{
 					signal: abortController.signal,
 					headers: {
@@ -149,10 +166,20 @@
 					}
 				}
 			);
+
+			if (!liveOutput && full) {
+				liveOutput = full;
+			}
 			liveLatencyMs = Math.round(performance.now() - start);
+
+			if (!liveOutput) {
+				liveError = 'Model returned empty response. Please check model status or quota.';
+			}
 		} catch (err: unknown) {
 			if (err instanceof Error && err.name === 'AbortError') {
-				// Aborted by user
+				if (!liveOutput) {
+					liveOutput = '[Generation stopped by user]';
+				}
 			} else {
 				liveError = err instanceof Error ? err.message : 'Chat completion failed';
 			}
@@ -461,9 +488,20 @@
 						bind:value={selectedModel}
 						class="h-8 rounded-md border border-border bg-background px-2.5 font-mono text-xs focus:ring-1 focus:ring-ring focus:outline-none"
 					>
-						{#each currentModels as m (m)}
-							<option value={m}>{m}</option>
-						{/each}
+						{#if enabledModels.length > 0}
+							<optgroup label="Enabled Models">
+								{#each enabledModels as m (m.id)}
+									<option value={m.id}>{m.id}</option>
+								{/each}
+							</optgroup>
+						{/if}
+						{#if disabledModels.length > 0}
+							<optgroup label="Disabled Models">
+								{#each disabledModels as m (m.id)}
+									<option value={m.id} disabled>{m.id} (disabled)</option>
+								{/each}
+							</optgroup>
+						{/if}
 					</select>
 				</div>
 			</div>
