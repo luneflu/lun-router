@@ -44,7 +44,7 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
-<div class="flex min-h-screen bg-background text-foreground">
+<div class="min-h-screen bg-background text-foreground">
 	<!-- Left Navigation Sidebar -->
 	<Sidebar
 		{activeView}
@@ -59,7 +59,7 @@
 	/>
 
 	<!-- Main Content Area -->
-	<div class="flex flex-1 flex-col overflow-x-hidden">
+	<div class="flex min-h-screen min-w-0 flex-1 flex-col md:ps-64">
 		<Navbar
 			error={keysState.error || providerState.error}
 			{activeView}

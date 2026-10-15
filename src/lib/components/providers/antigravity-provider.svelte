@@ -394,7 +394,7 @@
 		</div>
 
 		<!-- Models Table -->
-		<Card.Content class="p-0">
+		<Card.Content class="overflow-x-auto p-0">
 			<Table.Root>
 				<Table.Header>
 					<Table.Row class="hover:bg-transparent">

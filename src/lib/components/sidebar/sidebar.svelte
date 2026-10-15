@@ -52,7 +52,7 @@
 
 <aside
 	class={cn(
-		'fixed inset-y-0 start-0 z-50 flex w-64 flex-col border-e border-border bg-card transition-transform duration-200 md:static md:translate-x-0',
+		'fixed inset-y-0 start-0 z-40 flex h-screen w-64 flex-col border-e border-border bg-card transition-transform duration-200 md:translate-x-0',
 		mobileOpen ? 'translate-x-0' : '-translate-x-full'
 	)}
 >
