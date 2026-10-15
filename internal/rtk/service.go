@@ -11,14 +11,16 @@ import (
 	"sync/atomic"
 )
 
-type TokenSaverConfig struct {
+type RTKConfig struct {
 	RTKEnabled bool `json:"rtk_enabled"`
 }
+
+type TokenSaverConfig = RTKConfig
 
 type Service struct {
 	mu       sync.RWMutex
 	filePath string
-	config   TokenSaverConfig
+	config   RTKConfig
 
 	totalRequests   atomic.Int64
 	compressedReqs  atomic.Int64
@@ -35,10 +37,17 @@ func NewService(dataDir string) (*Service, error) {
 		return nil, fmt.Errorf("mkdir dataDir: %w", err)
 	}
 
-	fp := filepath.Join(dataDir, "token_saver.json")
+	fp := filepath.Join(dataDir, "rtk.json")
+	oldFp := filepath.Join(dataDir, "token_saver.json")
+	if _, err := os.Stat(fp); os.IsNotExist(err) {
+		if _, errOld := os.Stat(oldFp); errOld == nil {
+			_ = os.Rename(oldFp, fp)
+		}
+	}
+
 	s := &Service{
 		filePath: fp,
-		config: TokenSaverConfig{
+		config: RTKConfig{
 			RTKEnabled: true, // Default to true, matching 9router
 		},
 	}
@@ -55,7 +64,7 @@ func (s *Service) load() error {
 	if err != nil {
 		return err
 	}
-	var cfg TokenSaverConfig
+	var cfg RTKConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return err
 	}

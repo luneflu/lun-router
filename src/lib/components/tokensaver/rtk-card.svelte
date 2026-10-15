@@ -3,7 +3,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
-	import { tokenSaverState } from '$lib/state/tokensaver.svelte';
+	import { rtkState } from '$lib/state/rtk.svelte';
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import ArrowRightIcon from '@lucide/svelte/icons/arrow-right';
@@ -75,16 +75,16 @@
 	) {
 		sampleType = type;
 		testInput = getSample(type);
-		tokenSaverState.testResult = null;
+		rtkState.testResult = null;
 	}
 
 	async function handleRunTest() {
-		await tokenSaverState.runTest(testInput);
+		await rtkState.runTest(testInput);
 	}
 
 	async function handleCopy() {
-		if (!tokenSaverState.testResult?.output) return;
-		await navigator.clipboard.writeText(tokenSaverState.testResult.output);
+		if (!rtkState.testResult?.output) return;
+		await navigator.clipboard.writeText(rtkState.testResult.output);
 		copied = true;
 		setTimeout(() => (copied = false), 2000);
 	}
@@ -104,14 +104,11 @@
 					<div>
 						<div class="flex items-center gap-2">
 							<Card.Title class="text-base font-semibold">RTK Token Saver</Card.Title>
-							<Badge
-								variant={tokenSaverState.rtkEnabled ? 'default' : 'outline'}
-								class="text-[10px]"
-							>
-								{tokenSaverState.rtkEnabled ? 'Active' : 'Disabled'}
+							<Badge variant={rtkState.rtkEnabled ? 'default' : 'outline'} class="text-[10px]">
+								{rtkState.rtkEnabled ? 'Active' : 'Disabled'}
 							</Badge>
 							<Badge variant="secondary" class="text-[10px]">Embedded Go (Fast)</Badge>
-							{#if tokenSaverState.systemRtkAvailable}
+							{#if rtkState.systemRtkAvailable}
 								<Badge variant="outline" class="border-emerald-500/30 text-[10px] text-emerald-500">
 									CLI RTK Detected
 								</Badge>
@@ -129,20 +126,20 @@
 					<Button
 						variant="outline"
 						size="sm"
-						disabled={tokenSaverState.loading}
-						onclick={() => tokenSaverState.load()}
+						disabled={rtkState.loading}
+						onclick={() => rtkState.load()}
 						class="h-8 text-xs"
 					>
-						<RefreshCwIcon class={`size-3.5 ${tokenSaverState.loading ? 'animate-spin' : ''}`} />
+						<RefreshCwIcon class={`size-3.5 ${rtkState.loading ? 'animate-spin' : ''}`} />
 						Refresh
 					</Button>
 
 					<div class="flex items-center gap-2 border-s border-border ps-3">
 						<span class="text-xs font-medium text-muted-foreground">Enable RTK</span>
 						<Switch
-							checked={tokenSaverState.rtkEnabled}
-							disabled={tokenSaverState.toggling}
-							onCheckedChange={() => tokenSaverState.toggleRTK()}
+							checked={rtkState.rtkEnabled}
+							disabled={rtkState.toggling}
+							onCheckedChange={() => rtkState.toggleRTK()}
 						/>
 					</div>
 				</div>
@@ -155,9 +152,7 @@
 				<div class="rounded-lg border border-border/60 bg-muted/20 p-3.5">
 					<span class="text-[11px] font-medium text-muted-foreground">Requests Processed</span>
 					<div class="mt-1 flex items-baseline gap-2">
-						<span class="text-2xl font-bold tracking-tight"
-							>{tokenSaverState.stats.total_requests}</span
-						>
+						<span class="text-2xl font-bold tracking-tight">{rtkState.stats.total_requests}</span>
 					</div>
 					<span class="text-[10px] text-muted-foreground">Total completion queries</span>
 				</div>
@@ -166,7 +161,7 @@
 					<span class="text-[11px] font-medium text-muted-foreground">Compressed</span>
 					<div class="mt-1 flex items-baseline gap-2">
 						<span class="text-2xl font-bold tracking-tight text-amber-500"
-							>{tokenSaverState.stats.compressed_requests}</span
+							>{rtkState.stats.compressed_requests}</span
 						>
 					</div>
 					<span class="text-[10px] text-muted-foreground">Tool outputs compacted</span>
@@ -176,7 +171,7 @@
 					<span class="text-[11px] font-medium text-muted-foreground">Bytes Saved</span>
 					<div class="mt-1 flex items-baseline gap-2">
 						<span class="text-2xl font-bold tracking-tight text-emerald-500"
-							>{formatBytes(tokenSaverState.stats.saved_bytes)}</span
+							>{formatBytes(rtkState.stats.saved_bytes)}</span
 						>
 					</div>
 					<span class="text-[10px] text-muted-foreground">Bandwidth & context cut</span>
@@ -186,8 +181,8 @@
 					<span class="text-[11px] font-medium text-muted-foreground">Token Efficiency</span>
 					<div class="mt-1 flex items-baseline gap-2">
 						<span class="text-2xl font-bold tracking-tight text-primary">
-							{tokenSaverState.stats.saved_percent > 0
-								? `${tokenSaverState.stats.saved_percent.toFixed(1)}%`
+							{rtkState.stats.saved_percent > 0
+								? `${rtkState.stats.saved_percent.toFixed(1)}%`
 								: '0%'}
 						</span>
 					</div>
@@ -199,17 +194,15 @@
 			<div class="flex flex-col gap-2">
 				<div class="flex items-center justify-between">
 					<span class="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-						Supported Filters ({tokenSaverState.supportedFilters.length})
+						Supported Filters ({rtkState.supportedFilters.length})
 					</span>
 					<span class="text-[11px] text-muted-foreground">
-						Bypass header: <code class="rounded bg-muted px-1 py-0.5"
-							>X-9Router-Token-Saver: off</code
-						>
+						Bypass header: <code class="rounded bg-muted px-1 py-0.5">X-RTK: off</code>
 					</span>
 				</div>
 
 				<div class="flex flex-wrap gap-1.5">
-					{#each tokenSaverState.supportedFilters as filter (filter)}
+					{#each rtkState.supportedFilters as filter (filter)}
 						<Badge variant="secondary" class="font-mono text-[10px]">
 							{filter}
 						</Badge>
@@ -317,7 +310,7 @@
 				</span>
 				<Button
 					size="sm"
-					disabled={tokenSaverState.testing || !testInput.trim()}
+					disabled={rtkState.testing || !testInput.trim()}
 					onclick={handleRunTest}
 					class="h-8 gap-1.5 text-xs"
 				>
@@ -327,16 +320,16 @@
 			</div>
 
 			<!-- Results display -->
-			{#if tokenSaverState.testResult}
+			{#if rtkState.testResult}
 				<div class="mt-2 rounded-lg border border-border/80 bg-muted/10 p-4">
 					<div class="flex flex-col gap-3">
 						<div class="flex flex-wrap items-center justify-between gap-2">
 							<div class="flex items-center gap-2">
 								<CheckCircle2Icon class="size-4 text-emerald-500" />
 								<span class="text-xs font-semibold">Filter Detected:</span>
-								{#if tokenSaverState.testResult.filter}
+								{#if rtkState.testResult.filter}
 									<Badge variant="default" class="font-mono text-[11px]">
-										{tokenSaverState.testResult.filter}
+										{rtkState.testResult.filter}
 									</Badge>
 								{:else}
 									<Badge variant="secondary" class="text-[11px]">None (passthrough)</Badge>
@@ -345,14 +338,14 @@
 
 							<div class="flex items-center gap-3 text-xs">
 								<span class="text-muted-foreground">
-									{formatBytes(tokenSaverState.testResult.original_size)}
+									{formatBytes(rtkState.testResult.original_size)}
 								</span>
 								<ArrowRightIcon class="size-3 text-muted-foreground" />
 								<span class="font-semibold text-emerald-500">
-									{formatBytes(tokenSaverState.testResult.compressed_size)}
+									{formatBytes(rtkState.testResult.compressed_size)}
 								</span>
 								<Badge variant="secondary" class="font-bold text-emerald-500">
-									-{tokenSaverState.testResult.saved_percent.toFixed(1)}%
+									-{rtkState.testResult.saved_percent.toFixed(1)}%
 								</Badge>
 							</div>
 						</div>
@@ -376,7 +369,7 @@
 								</Button>
 							</div>
 							<pre
-								class="max-h-60 overflow-y-auto rounded-b-md border border-t-0 border-border/60 bg-muted/40 p-3 font-mono text-[11px] leading-relaxed whitespace-pre">{tokenSaverState
+								class="max-h-60 overflow-y-auto rounded-b-md border border-t-0 border-border/60 bg-muted/40 p-3 font-mono text-[11px] leading-relaxed whitespace-pre">{rtkState
 									.testResult.output}</pre>
 						</div>
 					</div>

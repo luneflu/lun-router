@@ -7,21 +7,21 @@ import (
 	"lun-router/internal/rtk"
 )
 
-type TokenSaverHandler struct {
+type RTKHandler struct {
 	service *rtk.Service
 }
 
-func NewTokenSaverHandler(s *rtk.Service) *TokenSaverHandler {
-	return &TokenSaverHandler{service: s}
+func NewRTKHandler(s *rtk.Service) *RTKHandler {
+	return &RTKHandler{service: s}
 }
 
-// GET /api/tokensaver
-func (h *TokenSaverHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
+// GET /api/rtk
+func (h *RTKHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	if h.service == nil {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"rtk_enabled": false,
-			"error":       "token saver service not available",
+			"error":       "rtk service not available",
 		})
 		return
 	}
@@ -30,8 +30,8 @@ func (h *TokenSaverHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(h.service.GetStatus())
 }
 
-// PUT /api/tokensaver
-func (h *TokenSaverHandler) Update(w http.ResponseWriter, r *http.Request) {
+// PUT /api/rtk
+func (h *RTKHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if h.service == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -62,8 +62,8 @@ func (h *TokenSaverHandler) Update(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(h.service.GetStatus())
 }
 
-// POST /api/tokensaver/test
-func (h *TokenSaverHandler) TestCompress(w http.ResponseWriter, r *http.Request) {
+// POST /api/rtk/test
+func (h *RTKHandler) TestCompress(w http.ResponseWriter, r *http.Request) {
 	if h.service == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)

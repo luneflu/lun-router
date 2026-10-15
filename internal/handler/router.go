@@ -18,7 +18,7 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 
 	keyH := NewKeyHandler(ks)
 	compH := NewCompletionHandler(ks, ms, client, agClient, rtkSvc, cavemanSvc)
-	tsH := NewTokenSaverHandler(rtkSvc)
+	rtkH := NewRTKHandler(rtkSvc)
 	caveH := NewCavemanHandler(cavemanSvc)
 
 	// API Keys Management
@@ -30,10 +30,14 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	mux.HandleFunc("DELETE /api/keys/{id}", keyH.Delete)
 	mux.HandleFunc("GET /api/keys/verify", keyH.Verify)
 
-	// Token Saver Routes (RTK)
-	mux.HandleFunc("GET /api/tokensaver", tsH.GetStatus)
-	mux.HandleFunc("PUT /api/tokensaver", tsH.Update)
-	mux.HandleFunc("POST /api/tokensaver/test", tsH.TestCompress)
+	// RTK Routes (Tool Output Compression)
+	mux.HandleFunc("GET /api/rtk", rtkH.GetStatus)
+	mux.HandleFunc("PUT /api/rtk", rtkH.Update)
+	mux.HandleFunc("POST /api/rtk/test", rtkH.TestCompress)
+	// Backward-compatible aliases
+	mux.HandleFunc("GET /api/tokensaver", rtkH.GetStatus)
+	mux.HandleFunc("PUT /api/tokensaver", rtkH.Update)
+	mux.HandleFunc("POST /api/tokensaver/test", rtkH.TestCompress)
 
 	// Caveman Routes (Prompt & Voice Optimization)
 	mux.HandleFunc("GET /api/caveman", caveH.GetStatus)

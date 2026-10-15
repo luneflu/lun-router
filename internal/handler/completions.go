@@ -427,10 +427,12 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	clientWantsStream, _ := bodyMap["stream"].(bool)
 
-	// Token Saver (RTK): auto-compress tool output before dispatching to upstream LLMs
-	// Client opt-out via X-9Router-Token-Saver: off or X-Token-Saver: off
-	clientOptOut := strings.EqualFold(r.Header.Get("X-9Router-Token-Saver"), "off") ||
+	// RTK: auto-compress tool output before dispatching to upstream LLMs
+	// Client opt-out via X-RTK: off, X-9Router-Token-Saver: off, or X-Token-Saver: off
+	clientOptOut := strings.EqualFold(r.Header.Get("X-RTK"), "off") ||
+		strings.EqualFold(r.Header.Get("X-9Router-Token-Saver"), "off") ||
 		strings.EqualFold(r.Header.Get("X-Token-Saver"), "off") ||
+		strings.EqualFold(r.URL.Query().Get("rtk"), "off") ||
 		strings.EqualFold(r.URL.Query().Get("token_saver"), "off")
 
 	if h.rtkService != nil {

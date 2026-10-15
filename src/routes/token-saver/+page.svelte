@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import RtkCard from '$lib/components/tokensaver/rtk-card.svelte';
 	import CavemanCard from '$lib/components/tokensaver/caveman-card.svelte';
-	import { tokenSaverState } from '$lib/state/tokensaver.svelte';
+	import { rtkState } from '$lib/state/rtk.svelte';
 	import { cavemanState } from '$lib/state/caveman.svelte';
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import BotIcon from '@lucide/svelte/icons/bot';
@@ -16,7 +16,7 @@
 		if (tabParam === 'caveman' || tabParam === 'rtk') {
 			activeTab = tabParam;
 		}
-		tokenSaverState.load();
+		rtkState.load();
 		cavemanState.load();
 	});
 
@@ -53,10 +53,10 @@
 			<ZapIcon class="h-4 w-4 text-amber-500" />
 			<span>RTK (Tool Outputs)</span>
 			<Badge
-				variant={tokenSaverState.rtkEnabled ? 'default' : 'secondary'}
+				variant={rtkState.rtkEnabled ? 'default' : 'secondary'}
 				class="ml-1 h-4 px-1.5 py-0 text-[10px]"
 			>
-				{tokenSaverState.rtkEnabled ? 'Active' : 'Off'}
+				{rtkState.rtkEnabled ? 'Active' : 'Off'}
 			</Badge>
 		</button>
 

@@ -1230,8 +1230,8 @@ func TestAntigravityQuotaTracker(t *testing.T) {
 	resp.Body.Close()
 }
 
-func TestTokenSaverRTKWorkflow(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "lun-tokensaver-test-*")
+func TestRTKWorkflow(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-rtk-test-*")
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
 	}
@@ -1250,17 +1250,17 @@ func TestTokenSaverRTKWorkflow(t *testing.T) {
 
 	client := server.Client()
 
-	// 1. GET /api/tokensaver status
-	resp, err := client.Get(server.URL + "/api/tokensaver")
+	// 1. GET /api/rtk status
+	resp, err := client.Get(server.URL + "/api/rtk")
 	if err != nil {
-		t.Fatalf("GET /api/tokensaver: %v", err)
+		t.Fatalf("GET /api/rtk: %v", err)
 	}
 	var statusResp struct {
 		RTKEnabled bool           `json:"rtk_enabled"`
 		Stats      map[string]any `json:"stats"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
-		t.Fatalf("decode tokensaver status: %v", err)
+		t.Fatalf("decode rtk status: %v", err)
 	}
 	resp.Body.Close()
 
@@ -1268,7 +1268,14 @@ func TestTokenSaverRTKWorkflow(t *testing.T) {
 		t.Errorf("expected rtk_enabled to be true initially")
 	}
 
-	// 2. POST /api/tokensaver/test simulation
+	// Also verify backward compatibility alias /api/tokensaver
+	compatResp, err := client.Get(server.URL + "/api/tokensaver")
+	if err != nil || compatResp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 for backward compat /api/tokensaver")
+	}
+	compatResp.Body.Close()
+
+	// 2. POST /api/rtk/test simulation
 	longDiff := strings.Join([]string{
 		"diff --git a/app.js b/app.js",
 		"index 123..456 100644",
@@ -1281,9 +1288,9 @@ func TestTokenSaverRTKWorkflow(t *testing.T) {
 	}
 
 	testPayload, _ := json.Marshal(map[string]string{"text": longDiff})
-	resp, err = client.Post(server.URL+"/api/tokensaver/test", "application/json", bytes.NewReader(testPayload))
+	resp, err = client.Post(server.URL+"/api/rtk/test", "application/json", bytes.NewReader(testPayload))
 	if err != nil {
-		t.Fatalf("POST /api/tokensaver/test: %v", err)
+		t.Fatalf("POST /api/rtk/test: %v", err)
 	}
 	var testResp struct {
 		Filter       string  `json:"filter"`
@@ -1303,13 +1310,13 @@ func TestTokenSaverRTKWorkflow(t *testing.T) {
 		t.Errorf("expected saved_bytes > 0, got %d", testResp.SavedBytes)
 	}
 
-	// 3. PUT /api/tokensaver toggle off
+	// 3. PUT /api/rtk toggle off
 	togglePayload, _ := json.Marshal(map[string]any{"rtk_enabled": false})
-	req, _ := http.NewRequest("PUT", server.URL+"/api/tokensaver", bytes.NewReader(togglePayload))
+	req, _ := http.NewRequest("PUT", server.URL+"/api/rtk", bytes.NewReader(togglePayload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = client.Do(req)
 	if err != nil {
-		t.Fatalf("PUT /api/tokensaver: %v", err)
+		t.Fatalf("PUT /api/rtk: %v", err)
 	}
 	var updateResp struct {
 		RTKEnabled bool `json:"rtk_enabled"`
@@ -1321,9 +1328,9 @@ func TestTokenSaverRTKWorkflow(t *testing.T) {
 		t.Errorf("expected rtk_enabled to be false after toggle")
 	}
 
-	// 4. PUT /api/tokensaver toggle back on
+	// 4. PUT /api/rtk toggle back on
 	togglePayload, _ = json.Marshal(map[string]any{"rtk_enabled": true})
-	req, _ = http.NewRequest("PUT", server.URL+"/api/tokensaver", bytes.NewReader(togglePayload))
+	req, _ = http.NewRequest("PUT", server.URL+"/api/rtk", bytes.NewReader(togglePayload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ = client.Do(req)
 	_ = json.NewDecoder(resp.Body).Decode(&updateResp)

@@ -6,7 +6,7 @@
 	import { keysState } from '$lib/state/keys.svelte';
 	import { providerState } from '$lib/state/provider.svelte';
 	import { antigravityState } from '$lib/state/antigravity.svelte';
-	import { tokenSaverState } from '$lib/state/tokensaver.svelte';
+	import { rtkState } from '$lib/state/rtk.svelte';
 	import Sidebar from '$lib/components/sidebar/sidebar.svelte';
 	import Navbar from '$lib/components/navbar/navbar.svelte';
 	import * as Alert from '$lib/components/ui/alert';
@@ -34,7 +34,7 @@
 		keysState.load();
 		providerState.load();
 		antigravityState.load();
-		tokenSaverState.load();
+		rtkState.load();
 	});
 </script>
 
