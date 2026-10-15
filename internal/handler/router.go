@@ -10,18 +10,18 @@ import (
 	"lun-router/internal/antigravity"
 	"lun-router/internal/auth"
 	"lun-router/internal/caveman"
+	"lun-router/internal/compactor"
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
-	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
 
-func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, staticFS ...fs.FS) http.Handler {
+func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, staticFS ...fs.FS) http.Handler {
 	mux := http.NewServeMux()
 
 	keyH := NewKeyHandler(ks)
-	compH := NewCompletionHandler(ks, ms, client, agClient, rtkSvc, cavemanSvc, ponytailSvc)
-	rtkH := NewRTKHandler(rtkSvc)
+	compH := NewCompletionHandler(ks, ms, client, agClient, compactorSvc, cavemanSvc, ponytailSvc)
+	compactH := NewCompactorHandler(compactorSvc)
 	caveH := NewCavemanHandler(cavemanSvc)
 	ponyH := NewPonytailHandler(ponytailSvc)
 
@@ -44,14 +44,10 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	mux.HandleFunc("DELETE /api/keys/{id}", keyH.Delete)
 	mux.HandleFunc("GET /api/keys/verify", keyH.Verify)
 
-	// RTK Routes (Tool Output Compression)
-	mux.HandleFunc("GET /api/rtk", rtkH.GetStatus)
-	mux.HandleFunc("PUT /api/rtk", rtkH.Update)
-	mux.HandleFunc("POST /api/rtk/test", rtkH.TestCompress)
-	// Backward-compatible aliases
-	mux.HandleFunc("GET /api/tokensaver", rtkH.GetStatus)
-	mux.HandleFunc("PUT /api/tokensaver", rtkH.Update)
-	mux.HandleFunc("POST /api/tokensaver/test", rtkH.TestCompress)
+	// Compactor Routes (tool output compression)
+	mux.HandleFunc("GET /api/compactor", compactH.GetStatus)
+	mux.HandleFunc("PUT /api/compactor", compactH.Update)
+	mux.HandleFunc("POST /api/compactor/test", compactH.TestCompress)
 
 	// Caveman Routes (Prompt & Voice Optimization)
 	mux.HandleFunc("GET /api/caveman", caveH.GetStatus)

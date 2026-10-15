@@ -1,4 +1,4 @@
-package rtk
+package compactor
 
 import (
 	"fmt"
@@ -35,7 +35,7 @@ func (s *Stats) LogLine() string {
 	for f := range filterSet {
 		filters = append(filters, f)
 	}
-	return fmt.Sprintf("[RTK] saved %dB / %dB (%.1f%%) via [%s] hits=%d", saved, s.BytesBefore, pct, strings.Join(filters, ","), len(s.Hits))
+	return fmt.Sprintf("[compact] saved %dB / %dB (%.1f%%) via [%s] hits=%d", saved, s.BytesBefore, pct, strings.Join(filters, ","), len(s.Hits))
 }
 
 func SafeApply(fn FilterFunc, text string) (out string) {
@@ -44,7 +44,7 @@ func SafeApply(fn FilterFunc, text string) (out string) {
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[RTK] warning: filter panicked, passing through raw output: %v", r)
+			log.Printf("[compact] warning: filter panicked, passing through raw output: %v", r)
 			out = text
 		}
 	}()
@@ -64,18 +64,8 @@ func CompressText(text string, stats *Stats, shape string) string {
 		return text
 	}
 
-	fn, filterName := AutoDetectFilter(text)
-	if fn == nil {
-		if stats != nil {
-			stats.BytesAfter += bytesIn
-		}
-		return text
-	}
-
-	out := SafeApply(fn, text)
-
-	// Safety: never return empty, never grow the input
-	if len(out) == 0 || len(out) >= bytesIn {
+	detected, filterName := compressOne(text)
+	if filterName == "" {
 		if stats != nil {
 			stats.BytesAfter += bytesIn
 		}
@@ -83,14 +73,59 @@ func CompressText(text string, stats *Stats, shape string) string {
 	}
 
 	if stats != nil {
-		stats.BytesAfter += len(out)
+		stats.BytesAfter += len(detected)
 		stats.Hits = append(stats.Hits, Hit{
 			Shape:  shape,
 			Filter: filterName,
-			Saved:  bytesIn - len(out),
+			Saved:  bytesIn - len(detected),
 		})
 	}
-	return out
+	return detected
+}
+
+// compressOne picks one strategy and applies every safety gate. It returns the
+// input unchanged with filterName "" when nothing applies or a gate rejected the
+// result.
+func compressOne(text string) (out string, filterName string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[compact] warning: compressor panicked, passing through raw output: %v", r)
+			out, filterName = text, ""
+		}
+	}()
+
+	out, filterName = compressDetected(text)
+	// Safety: never return empty, never grow the input, never drop error signals.
+	if filterName == "" || len(out) == 0 || len(out) >= len(text) || !preservesErrorSignals(text, out) {
+		return text, ""
+	}
+	return out, filterName
+}
+
+// compressDetected picks the structure-based JSON path first, then the shape-based
+// autodetect filters. JSON never reaches the shell-output filters.
+func compressDetected(text string) (string, string) {
+	if IsJSONLike(text) {
+		if out, ok := CompressJSON(text); ok {
+			return out, "json"
+		}
+		return "", ""
+	}
+
+	fn, name := AutoDetectFilter(text)
+	if fn == nil {
+		return "", ""
+	}
+	return SafeApply(fn, text), name
+}
+
+// preservesErrorSignals guards against a misdetected filter summarizing away the
+// lines that matter most.
+func preservesErrorSignals(in, out string) bool {
+	if !reErrorSignal.MatchString(in) {
+		return true
+	}
+	return reErrorSignal.MatchString(out)
 }
 
 // CompressMessages compresses tool_result / tool content in-place in bodyMap.

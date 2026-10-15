@@ -1,4 +1,4 @@
-package rtk
+package compactor
 
 import (
 	"fmt"
@@ -17,9 +17,13 @@ var (
 	reCommitGraph     = regexp.MustCompile(`(?i)^[*|/\\ ]+([0-9a-f]{7,40}\s+.+)`)
 	reCommitPlain     = regexp.MustCompile(`^[0-9a-f]{7,40}\s+`)
 	reCommitPureGraph = regexp.MustCompile(`^[*|/\\ ]+$`)
-	rePorcelainStatus = regexp.MustCompile(`^[ MADRCU?!][ MADRCU?!] `)
-	reLongStatus      = regexp.MustCompile(`^\s*(modified|new file|deleted|renamed|both modified):\s+(.+)$`)
-	reHunkHeader      = regexp.MustCompile(`^@@\s+-[0-9,]+\s+\+[0-9,]+\s+@@(.*)$`)
+	// rePorcelainLine requires a path, so indented text (pretty JSON,
+	// wrapped logs) is not mistaken for `git status --porcelain`.
+	rePorcelainLine = regexp.MustCompile(`^[ MADRCU?!][ MADRCU?!] \S`)
+	reISOTime       = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}`)
+	reErrorSignal   = regexp.MustCompile(`(?i)\b(fatal|panic|traceback|unhandled|segmentation fault|sigsegv)\b`)
+	reLongStatus    = regexp.MustCompile(`^\s*(modified|new file|deleted|renamed|both modified):\s+(.+)$`)
+	reHunkHeader    = regexp.MustCompile(`^@@\s+-[0-9,]+\s+\+[0-9,]+\s+@@(.*)$`)
 )
 
 func diffHeaderPath(line string) string {
@@ -167,7 +171,16 @@ outer:
 
 // GitStatus produces compact git status summary
 func GitStatus(input string) string {
-	input = StripAnsi(input)
+	clean := StripAnsi(input)
+	if strings.TrimSpace(clean) == "" {
+		return "Clean working tree"
+	}
+	// Only summarize real git status output; never fabricate "Clean working tree"
+	// for content that merely shares the leading whitespace pattern.
+	if !looksLikeGitStatus(clean) {
+		return input
+	}
+	input = clean
 	lines := strings.Split(input, "\n")
 	if len(lines) == 0 || (len(lines) == 1 && strings.TrimSpace(lines[0]) == "") {
 		return "Clean working tree"
@@ -210,7 +223,7 @@ func GitStatus(input string) string {
 			continue
 		}
 
-		if len(raw) >= 3 && rePorcelainStatus.MatchString(raw[:3]) {
+		if rePorcelainLine.MatchString(raw) {
 			x := raw[0]
 			y := raw[1]
 			file := raw[3:]
@@ -253,6 +266,12 @@ func GitStatus(input string) string {
 	}
 
 	var out strings.Builder
+	if branch == "" && len(states) == 0 && staged+modified+untracked+conflicts == 0 {
+		// Nothing parsed as status output: pass the original through rather than
+		// claiming the tree is clean.
+		return input
+	}
+
 	if branch != "" {
 		out.WriteString(fmt.Sprintf("* %s\n", branch))
 	}

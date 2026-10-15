@@ -19,11 +19,11 @@ import (
 	"lun-router/internal/antigravity"
 	"lun-router/internal/auth"
 	"lun-router/internal/caveman"
+	"lun-router/internal/compactor"
 	"lun-router/internal/handler"
 	"lun-router/internal/model"
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
-	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
 
@@ -1267,8 +1267,8 @@ func TestAntigravityQuotaTracker(t *testing.T) {
 	resp.Body.Close()
 }
 
-func TestRTKWorkflow(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "lun-rtk-test-*")
+func TestCompactorWorkflow(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-compactor-test-*")
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
 	}
@@ -1276,43 +1276,35 @@ func TestRTKWorkflow(t *testing.T) {
 
 	ks, _ := store.NewKeyStore(tempDir)
 	ms, _ := store.NewModelStore(tempDir)
-	rtkSvc, err := rtk.NewService(tempDir)
+	compactorSvc, err := compactor.NewService(tempDir)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	router := handler.NewRouter(ks, ms, nil, nil, rtkSvc, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, nil, nil, compactorSvc, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
 	client := server.Client()
 
-	// 1. GET /api/rtk status
-	resp, err := client.Get(server.URL + "/api/rtk")
+	// 1. GET /api/compactor status (canonical route)
+	resp, err := client.Get(server.URL + "/api/compactor")
 	if err != nil {
-		t.Fatalf("GET /api/rtk: %v", err)
+		t.Fatalf("GET /api/compactor: %v", err)
 	}
 	var statusResp struct {
-		RTKEnabled bool           `json:"rtk_enabled"`
-		Stats      map[string]any `json:"stats"`
+		Enabled bool           `json:"enabled"`
+		Stats   map[string]any `json:"stats"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
-		t.Fatalf("decode rtk status: %v", err)
+		t.Fatalf("decode compactor status: %v", err)
 	}
 	resp.Body.Close()
 
-	if !statusResp.RTKEnabled {
-		t.Errorf("expected rtk_enabled to be true initially")
+	if !statusResp.Enabled {
+		t.Errorf("expected enabled to be true initially")
 	}
-
-	// Also verify backward compatibility alias /api/tokensaver
-	compatResp, err := client.Get(server.URL + "/api/tokensaver")
-	if err != nil || compatResp.StatusCode != http.StatusOK {
-		t.Errorf("expected 200 for backward compat /api/tokensaver")
-	}
-	compatResp.Body.Close()
-
-	// 2. POST /api/rtk/test simulation
+	// 2. POST /api/compactor/test simulation
 	longDiff := strings.Join([]string{
 		"diff --git a/app.js b/app.js",
 		"index 123..456 100644",
@@ -1325,9 +1317,9 @@ func TestRTKWorkflow(t *testing.T) {
 	}
 
 	testPayload, _ := json.Marshal(map[string]string{"text": longDiff})
-	resp, err = client.Post(server.URL+"/api/rtk/test", "application/json", bytes.NewReader(testPayload))
+	resp, err = client.Post(server.URL+"/api/compactor/test", "application/json", bytes.NewReader(testPayload))
 	if err != nil {
-		t.Fatalf("POST /api/rtk/test: %v", err)
+		t.Fatalf("POST /api/compactor/test: %v", err)
 	}
 	var testResp struct {
 		Filter       string  `json:"filter"`
@@ -1347,34 +1339,33 @@ func TestRTKWorkflow(t *testing.T) {
 		t.Errorf("expected saved_bytes > 0, got %d", testResp.SavedBytes)
 	}
 
-	// 3. PUT /api/rtk toggle off
-	togglePayload, _ := json.Marshal(map[string]any{"rtk_enabled": false})
-	req, _ := http.NewRequest("PUT", server.URL+"/api/rtk", bytes.NewReader(togglePayload))
+	// 3. PUT /api/compactor toggle off with the canonical key
+	togglePayload, _ := json.Marshal(map[string]any{"enabled": false})
+	req, _ := http.NewRequest("PUT", server.URL+"/api/compactor", bytes.NewReader(togglePayload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = client.Do(req)
 	if err != nil {
-		t.Fatalf("PUT /api/rtk: %v", err)
+		t.Fatalf("PUT /api/compactor: %v", err)
 	}
 	var updateResp struct {
-		RTKEnabled bool `json:"rtk_enabled"`
+		Enabled bool `json:"enabled"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&updateResp)
 	resp.Body.Close()
 
-	if updateResp.RTKEnabled {
-		t.Errorf("expected rtk_enabled to be false after toggle")
+	if updateResp.Enabled {
+		t.Errorf("expected enabled to be false after toggle")
 	}
-
-	// 4. PUT /api/rtk toggle back on
-	togglePayload, _ = json.Marshal(map[string]any{"rtk_enabled": true})
-	req, _ = http.NewRequest("PUT", server.URL+"/api/rtk", bytes.NewReader(togglePayload))
+	// 4. Toggle back on
+	togglePayload, _ = json.Marshal(map[string]any{"enabled": true})
+	req, _ = http.NewRequest("PUT", server.URL+"/api/compactor", bytes.NewReader(togglePayload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ = client.Do(req)
 	_ = json.NewDecoder(resp.Body).Decode(&updateResp)
 	resp.Body.Close()
 
-	if !updateResp.RTKEnabled {
-		t.Errorf("expected rtk_enabled to be true after second toggle")
+	if !updateResp.Enabled {
+		t.Errorf("expected enabled to be true after second toggle")
 	}
 }
 

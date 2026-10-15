@@ -1,6 +1,7 @@
-package rtk
+package compactor
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -304,7 +305,7 @@ func TestGoTest(t *testing.T) {
 }
 
 func TestService(t *testing.T) {
-	tmp, err := os.MkdirTemp("", "rtk-test-*")
+	tmp, err := os.MkdirTemp("", "compactor-test-*")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,8 +316,8 @@ func TestService(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !s.IsRTKEnabled() {
-		t.Errorf("expected RTK to be enabled by default")
+	if !s.Enabled() {
+		t.Errorf("expected compactor to be enabled by default")
 	}
 
 	body := map[string]any{
@@ -334,8 +335,8 @@ func TestService(t *testing.T) {
 	}
 
 	st := s.GetStatus()
-	if st["rtk_enabled"] != true {
-		t.Errorf("expected rtk_enabled to be true")
+	if st["enabled"] != true {
+		t.Errorf("expected enabled to be true")
 	}
 
 	stMap := st["stats"].(map[string]any)
@@ -355,5 +356,208 @@ func TestService(t *testing.T) {
 	stats2 := s.ProcessBody(body2, true)
 	if stats2 != nil {
 		t.Errorf("expected nil stats on bypass")
+	}
+}
+
+func makeJSONToolOutput(n int) string {
+	rows := make([]map[string]any, 0, n)
+	for i := 0; i < n; i++ {
+		status := "ok"
+		snippet := "export let value = $state(0);"
+		if i == n/2 {
+			status = "error"
+			snippet = "FATAL: unhandled rejection in transport layer"
+		}
+		rows = append(rows, map[string]any{
+			"id":         i,
+			"path":       fmt.Sprintf("src/lib/components/x%d.svelte", i%7),
+			"lineNumber": 120 + i,
+			"score":      float64(i) / float64(n),
+			"snippet":    snippet,
+			"status":     status,
+		})
+	}
+	out, err := json.MarshalIndent(rows, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	return string(out)
+}
+
+func TestJSONNeverBecomesGitStatus(t *testing.T) {
+	in := makeJSONToolOutput(120)
+	out, filterName := compressOne(in)
+	if filterName != "json" {
+		t.Fatalf("expected json filter, got %q", filterName)
+	}
+	if strings.Contains(out, "Clean working tree") {
+		t.Fatal("JSON tool output was summarized as a git status")
+	}
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("compressed output is not valid JSON: %s", out[:120])
+	}
+	if !strings.Contains(out, "FATAL") {
+		t.Error("expected the error row to survive compression")
+	}
+	if len(out) >= len(in) {
+		t.Errorf("expected savings, got %d -> %d bytes", len(in), len(out))
+	}
+}
+
+func TestJSONTableFoldsUniformRows(t *testing.T) {
+	const rows = 50
+	in := makeJSONToolOutput(rows)
+	out, filterName := compressOne(in)
+	if filterName != "json" {
+		t.Fatalf("expected json filter, got %q", filterName)
+	}
+
+	var parsed struct {
+		Marker string   `json:"_compacted"`
+		Fields []string `json:"fields"`
+		Rows   [][]any  `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("decode folded table: %v", err)
+	}
+	if parsed.Marker != "table" {
+		t.Errorf("expected _compacted=table, got %q", parsed.Marker)
+	}
+	if len(parsed.Rows) != rows {
+		t.Errorf("expected %d rows, got %d", rows, len(parsed.Rows))
+	}
+	for i, row := range parsed.Rows {
+		if len(row) != len(parsed.Fields) {
+			t.Fatalf("row %d has %d values for %d fields", i, len(row), len(parsed.Fields))
+		}
+	}
+	// Every original row must survive: same count, and the error row is present.
+	found := false
+	for _, row := range parsed.Rows {
+		for _, v := range row {
+			if s, ok := v.(string); ok && strings.HasPrefix(s, "FATAL:") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected the error row in the folded table")
+	}
+
+	// Lossless: rebuilding objects from fields+rows must equal the input.
+	var original []map[string]any
+	if err := json.Unmarshal([]byte(in), &original); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt := make([]map[string]any, 0, len(parsed.Rows))
+	for _, row := range parsed.Rows {
+		obj := make(map[string]any, len(parsed.Fields))
+		for i, f := range parsed.Fields {
+			obj[f] = row[i]
+		}
+		rebuilt = append(rebuilt, obj)
+	}
+	want, _ := json.Marshal(original)
+	got, _ := json.Marshal(rebuilt)
+	if string(want) != string(got) {
+		t.Error("fold is not lossless")
+	}
+}
+
+func TestJSONFallsBackToMinify(t *testing.T) {
+	in, err := json.MarshalIndent([]any{
+		map[string]any{"path": "a.go", "size": 12},
+		map[string]any{"path": "b.go", "size": 34},
+	}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, filterName := compressOne(string(in))
+	if filterName != "json" {
+		t.Fatalf("expected json filter, got %q", filterName)
+	}
+	if strings.Contains(out, "_compacted") {
+		t.Error("expected minify-only for a short non-uniform array")
+	}
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("output is not valid JSON: %s", out)
+	}
+}
+
+func TestJSONAlreadyCompactIsUnchanged(t *testing.T) {
+	in := `{"a":1,"b":"two"}`
+	out, filterName := compressOne(in)
+	if filterName != "" {
+		t.Errorf("expected passthrough, got filter %q", filterName)
+	}
+	if out != in {
+		t.Errorf("expected unchanged input, got %q", out)
+	}
+}
+
+func TestAutoDetectSkipsJSON(t *testing.T) {
+	if _, name := AutoDetectFilter(makeJSONToolOutput(5)); name != "" {
+		t.Errorf("expected no shell filter for JSON, got %q", name)
+	}
+}
+
+func TestGitStatusPassesThroughNonStatusInput(t *testing.T) {
+	cases := []string{
+		"[\n   \"alpha\",\n   \"beta\",\n   \"gamma\"\n]",
+		"context:\n   \"alpha\": 1,\n   \"beta\": 2,\n   \"gamma\": 3",
+		"nonsense output\nfrom a tool\nwith indentation",
+	}
+	for _, in := range cases {
+		if got := GitStatus(in); got != in {
+			t.Errorf("GitStatus rewrote non-status input:\n in: %q\nout: %q", in, got)
+		}
+	}
+}
+
+func TestGrepDetectionRejectsTimestampedLogs(t *testing.T) {
+	line := "2026-10-15T10:00:00Z INFO worker[3] fetch 3 ok 12ms"
+	if isGrepLine(line) {
+		t.Fatalf("timestamped log line detected as grep output: %q", line)
+	}
+	if _, name := AutoDetectFilter(line + "\n" + line + "\n" + line + "\n" + line + "\n" + line + "\n" + line); name == "grep" {
+		t.Error("timestamped log detected as grep output")
+	}
+}
+
+func TestTimestampedLogKeepsErrorLine(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&b, "2026-10-15T10:%02d:00Z INFO worker[%d] fetch %d ok 12ms\n", i%60, i%8, i)
+	}
+	b.WriteString("2026-10-15T10:59:00Z FATAL worker[3] connection reset by peer\n")
+	in := b.String()
+
+	out, _ := compressOne(in)
+	if !strings.Contains(out, "FATAL worker[3] connection reset by peer") {
+		t.Errorf("expected the FATAL line to survive, got %d bytes", len(out))
+	}
+}
+
+func TestPreservesErrorSignals(t *testing.T) {
+	if preservesErrorSignals("ok\nFATAL: boom", "all good") {
+		t.Error("expected false when the output drops a FATAL line")
+	}
+	if !preservesErrorSignals("ok\nFATAL: boom", "1 error\nFATAL: boom") {
+		t.Error("expected true when the FATAL line is kept")
+	}
+	if !preservesErrorSignals("nothing to see", "summary") {
+		t.Error("expected true when the input has no error signals")
+	}
+}
+
+func TestIsJSONLike(t *testing.T) {
+	if !IsJSONLike("  [1,2,3]  ") {
+		t.Error("expected array to be JSON-like")
+	}
+	if !IsJSONLike(`{"a":1}`) {
+		t.Error("expected object to be JSON-like")
+	}
+	if IsJSONLike("42") || IsJSONLike(`"text"`) || IsJSONLike("{not json}") {
+		t.Error("expected scalars and malformed JSON to be rejected")
 	}
 }

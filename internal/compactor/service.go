@@ -1,26 +1,24 @@
-package rtk
+package compactor
 
 import (
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 )
 
-type RTKConfig struct {
-	RTKEnabled bool `json:"rtk_enabled"`
+// Config is the persisted compactor state.
+type Config struct {
+	Enabled bool `json:"enabled"`
 }
-
-type TokenSaverConfig = RTKConfig
 
 type Service struct {
 	mu       sync.RWMutex
 	filePath string
-	config   RTKConfig
+	config   Config
 
 	totalRequests   atomic.Int64
 	compressedReqs  atomic.Int64
@@ -37,26 +35,54 @@ func NewService(dataDir string) (*Service, error) {
 		return nil, fmt.Errorf("mkdir dataDir: %w", err)
 	}
 
-	fp := filepath.Join(dataDir, "rtk.json")
-	oldFp := filepath.Join(dataDir, "token_saver.json")
-	if _, err := os.Stat(fp); os.IsNotExist(err) {
-		if _, errOld := os.Stat(oldFp); errOld == nil {
-			_ = os.Rename(oldFp, fp)
-		}
-	}
+	// compactor.json is canonical; older installs are migrated once, see migrateLegacyConfig.
+	fp := filepath.Join(dataDir, "compactor.json")
+	migrateLegacyConfig(dataDir, fp)
 
 	s := &Service{
 		filePath: fp,
-		config: RTKConfig{
-			RTKEnabled: true, // Default to true, matching 9router
+		config: Config{
+			Enabled: true, // Default to true, matching 9router
 		},
 	}
 
 	if err := s.load(); err != nil && !os.IsNotExist(err) {
-		log.Printf("[RTK] warning: failed to load config %s: %v", fp, err)
+		log.Printf("[compact] warning: failed to load config %s: %v", fp, err)
 	}
 
 	return s, nil
+}
+
+// migrateLegacyConfig adopts a pre-rename rtk.json / token_saver.json once, then
+// removes it so the old key cannot silently flip the setting back to a default.
+func migrateLegacyConfig(dataDir, fp string) {
+	if _, err := os.Stat(fp); err == nil {
+		return
+	}
+	for _, name := range []string{"rtk.json", "token_saver.json"} {
+		legacy := filepath.Join(dataDir, name)
+		data, err := os.ReadFile(legacy)
+		if err != nil {
+			continue
+		}
+		var old struct {
+			Enabled    *bool `json:"enabled"`
+			RTKEnabled *bool `json:"rtk_enabled"`
+		}
+		_ = json.Unmarshal(data, &old)
+		_ = os.Remove(legacy)
+
+		enabled := true
+		if old.Enabled != nil {
+			enabled = *old.Enabled
+		} else if old.RTKEnabled != nil {
+			enabled = *old.RTKEnabled
+		}
+		if out, err := json.MarshalIndent(Config{Enabled: enabled}, "", "  "); err == nil {
+			_ = os.WriteFile(fp, out, 0644)
+		}
+		return
+	}
 }
 
 func (s *Service) load() error {
@@ -64,7 +90,7 @@ func (s *Service) load() error {
 	if err != nil {
 		return err
 	}
-	var cfg RTKConfig
+	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return err
 	}
@@ -86,23 +112,23 @@ func (s *Service) saveLocked() error {
 	return os.Rename(tmp, s.filePath)
 }
 
-func (s *Service) IsRTKEnabled() bool {
+func (s *Service) Enabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.config.RTKEnabled
+	return s.config.Enabled
 }
 
-func (s *Service) SetRTKEnabled(enabled bool) error {
+func (s *Service) SetEnabled(enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.config.RTKEnabled = enabled
+	s.config.Enabled = enabled
 	return s.saveLocked()
 }
 
 func (s *Service) ProcessBody(body map[string]any, bypass bool) *Stats {
 	s.totalRequests.Add(1)
 
-	if bypass || !s.IsRTKEnabled() {
+	if bypass || !s.Enabled() {
 		return nil
 	}
 
@@ -130,19 +156,15 @@ func (s *Service) ProcessBody(body map[string]any, bypass bool) *Stats {
 
 func (s *Service) TestCompress(text string) map[string]any {
 	bytesIn := len(text)
-	fn, filterName := AutoDetectFilter(text)
-	if fn == nil {
-		return map[string]any{
-			"filter":        nil,
-			"original_size": bytesIn,
-			"compressed_size": bytesIn,
-			"saved_bytes":   0,
-			"saved_percent": 0.0,
-			"output":        text,
-		}
+
+	out, filterName := compressOne(text)
+	var filter any
+	if filterName != "" {
+		filter = filterName
+	} else {
+		out = text
 	}
 
-	out := SafeApply(fn, text)
 	bytesOut := len(out)
 	saved := bytesIn - bytesOut
 	savedPct := 0.0
@@ -151,7 +173,7 @@ func (s *Service) TestCompress(text string) map[string]any {
 	}
 
 	return map[string]any{
-		"filter":          filterName,
+		"filter":          filter,
 		"original_size":   bytesIn,
 		"compressed_size": bytesOut,
 		"saved_bytes":     saved,
@@ -162,7 +184,7 @@ func (s *Service) TestCompress(text string) map[string]any {
 
 func (s *Service) GetStatus() map[string]any {
 	s.mu.RLock()
-	enabled := s.config.RTKEnabled
+	enabled := s.config.Enabled
 	s.mu.RUnlock()
 
 	bytesIn := s.totalBytesIn.Load()
@@ -178,14 +200,9 @@ func (s *Service) GetStatus() map[string]any {
 	copy(recent, s.recentHits)
 	s.recentMu.Unlock()
 
-	systemPath, err := exec.LookPath("rtk")
-	systemAvailable := err == nil && systemPath != ""
-
 	return map[string]any{
-		"rtk_enabled":          enabled,
-		"engine":               "embedded-go",
-		"system_rtk_available": systemAvailable,
-		"system_rtk_path":      systemPath,
+		"enabled": enabled,
+		"engine":  "embedded-go",
 		"stats": map[string]any{
 			"total_requests":      s.totalRequests.Load(),
 			"compressed_requests": s.compressedReqs.Load(),
@@ -196,6 +213,7 @@ func (s *Service) GetStatus() map[string]any {
 			"recent_hits":         recent,
 		},
 		"supported_filters": []string{
+			"json",
 			"git-diff",
 			"git-status",
 			"git-log",

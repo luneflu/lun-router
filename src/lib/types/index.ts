@@ -75,32 +75,30 @@ export interface AntigravityAccountUsage {
 	fetchedAt: string;
 }
 
-export interface RTKHit {
+export interface CompactorHit {
 	shape: string;
 	filter: string;
 	saved: number;
 }
 
-export interface RTKStats {
+export interface CompactorStats {
 	total_requests: number;
 	compressed_requests: number;
 	bytes_before: number;
 	bytes_after: number;
 	saved_bytes: number;
 	saved_percent: number;
-	recent_hits?: RTKHit[];
+	recent_hits?: CompactorHit[];
 }
 
-export interface RTKStatus {
-	rtk_enabled: boolean;
+export interface CompactorStatus {
+	enabled: boolean;
 	engine?: string;
-	system_rtk_available?: boolean;
-	system_rtk_path?: string;
-	stats: RTKStats;
+	stats: CompactorStats;
 	supported_filters: string[];
 }
 
-export interface RTKTestResult {
+export interface CompactorTestResult {
 	filter: string | null;
 	original_size: number;
 	compressed_size: number;
@@ -108,11 +106,6 @@ export interface RTKTestResult {
 	saved_percent: number;
 	output: string;
 }
-
-export type TokenSaverHit = RTKHit;
-export type TokenSaverStats = RTKStats;
-export type TokenSaverStatus = RTKStatus;
-export type TokenSaverTestResult = RTKTestResult;
 
 export interface CavemanModeInfo {
 	id: string;

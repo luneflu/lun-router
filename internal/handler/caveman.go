@@ -169,14 +169,14 @@ func (h *CavemanHandler) TestPrompt(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"applied":            applied,
-		"provider":           req.Provider,
-		"model":              req.Model,
-		"mode":               req.Mode,
-		"injected_prompt":    injectedPrompt,
-		"messages":           injectedMessages,
-		"prompt_tokens_est":  originalTokens,
-		"estimated_savings":  estResponseSavings,
-		"timestamp":          time.Now().Format(time.RFC3339),
+		"applied":           applied,
+		"provider":          req.Provider,
+		"model":             req.Model,
+		"mode":              req.Mode,
+		"injected_prompt":   injectedPrompt,
+		"messages":          injectedMessages,
+		"prompt_tokens_est": originalTokens,
+		"estimated_savings": estResponseSavings,
+		"timestamp":         time.Now().Format(time.RFC3339),
 	})
 }

@@ -1,4 +1,4 @@
-package rtk
+package compactor
 
 import (
 	"regexp"
@@ -32,6 +32,13 @@ func safeHead(s string, maxBytes int) string {
 
 func AutoDetectFilter(text string) (FilterFunc, string) {
 	clean := StripAnsi(text)
+
+	// JSON is handled by the structure-based JSON path, never by the shell-output
+	// filters below.
+	if IsJSONLike(clean) {
+		return nil, ""
+	}
+
 	head := safeHead(clean, DetectWindow)
 
 	// Test output autodetection (matching official RTK pipe_cmd.rs)
@@ -134,6 +141,11 @@ func AutoDetectFilter(text string) (FilterFunc, string) {
 }
 
 func isGrepLine(line string) bool {
+	// Timestamped logs ("2026-10-15T10:00:00Z INFO ...") look like grep output
+	// ("file:number:content") but are not.
+	if reISOTime.MatchString(line) {
+		return false
+	}
 	first := strings.Index(line, ":")
 	if first == -1 {
 		return false
@@ -162,6 +174,19 @@ func isPathLike(line string) bool {
 	return strings.HasPrefix(t, ".") || strings.HasPrefix(t, "/") || strings.Contains(t, "/")
 }
 
+func looksLikeGitStatus(text string) bool {
+	head := safeHead(text, DetectWindow)
+	if reGitStatusHead.MatchString(head) {
+		return true
+	}
+	for _, line := range strings.Split(head, "\n") {
+		if rePorcelainLine.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
 func isMostlyPorcelain(head string) bool {
 	lines := strings.Split(head, "\n")
 	var valid []string
@@ -176,7 +201,7 @@ func isMostlyPorcelain(head string) bool {
 
 	hits := 0
 	for _, l := range valid {
-		if len(l) >= 3 && rePorcelainStatus.MatchString(l[:3]) {
+		if rePorcelainLine.MatchString(l) {
 			hits++
 		}
 	}

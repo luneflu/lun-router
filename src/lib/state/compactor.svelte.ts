@@ -1,12 +1,10 @@
-import type { RTKStats, RTKTestResult } from '$lib/types';
-import { fetchRTKStatus, updateRTKConfig, testRTKCompress } from '$lib/api/rtk';
+import type { CompactorStatus, CompactorTestResult } from '$lib/types';
+import { fetchCompactorStatus, updateCompactor, testCompactorCompress } from '$lib/api/compactor';
 
-export class RTKState {
-	rtkEnabled = $state(true);
+export class CompactorState {
+	enabled = $state(true);
 	engine = $state('embedded-go');
-	systemRtkAvailable = $state(false);
-	systemRtkPath = $state<string | undefined>(undefined);
-	stats = $state<RTKStats>({
+	stats = $state<CompactorStatus['stats']>({
 		total_requests: 0,
 		compressed_requests: 0,
 		bytes_before: 0,
@@ -16,6 +14,7 @@ export class RTKState {
 		recent_hits: []
 	});
 	supportedFilters = $state<string[]>([
+		'json',
 		'git-diff',
 		'git-status',
 		'git-log',
@@ -36,38 +35,35 @@ export class RTKState {
 	toggling = $state(false);
 	testing = $state(false);
 	error = $state<string | null>(null);
-	testResult = $state<RTKTestResult | null>(null);
+	testResult = $state<CompactorTestResult | null>(null);
 
 	async load() {
 		try {
 			this.loading = true;
 			this.error = null;
-			const data = await fetchRTKStatus();
-			this.rtkEnabled = data.rtk_enabled;
+			const data = await fetchCompactorStatus();
+			this.enabled = data.enabled;
 			this.engine = data.engine ?? 'embedded-go';
-			this.systemRtkAvailable = !!data.system_rtk_available;
-			this.systemRtkPath = data.system_rtk_path;
 			this.stats = data.stats;
 			if (data.supported_filters) {
 				this.supportedFilters = data.supported_filters;
 			}
 		} catch (e: unknown) {
-			this.error = e instanceof Error ? e.message : 'Failed to load RTK status';
+			this.error = e instanceof Error ? e.message : 'Failed to load compactor status';
 		} finally {
 			this.loading = false;
 		}
 	}
 
-	async toggleRTK() {
+	async toggle() {
 		try {
 			this.toggling = true;
 			this.error = null;
-			const target = !this.rtkEnabled;
-			const data = await updateRTKConfig(target);
-			this.rtkEnabled = data.rtk_enabled;
+			const data = await updateCompactor(!this.enabled);
+			this.enabled = data.enabled;
 			this.stats = data.stats;
 		} catch (e: unknown) {
-			this.error = e instanceof Error ? e.message : 'Failed to update RTK';
+			this.error = e instanceof Error ? e.message : 'Failed to update compactor';
 		} finally {
 			this.toggling = false;
 		}
@@ -81,7 +77,7 @@ export class RTKState {
 		try {
 			this.testing = true;
 			this.error = null;
-			const res = await testRTKCompress(text);
+			const res = await testCompactorCompress(text);
 			this.testResult = res;
 		} catch (e: unknown) {
 			this.error = e instanceof Error ? e.message : 'Failed to test compression';
@@ -91,8 +87,4 @@ export class RTKState {
 	}
 }
 
-export const rtkState = new RTKState();
-
-// Aliases for backward compatibility
-export const TokenSaverState = RTKState;
-export const tokenSaverState = rtkState;
+export const compactorState = new CompactorState();

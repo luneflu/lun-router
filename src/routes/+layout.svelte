@@ -8,7 +8,7 @@
 	import { keysState } from '$lib/state/keys.svelte';
 	import { providerState } from '$lib/state/provider.svelte';
 	import { antigravityState } from '$lib/state/antigravity.svelte';
-	import { rtkState } from '$lib/state/rtk.svelte';
+	import { compactorState } from '$lib/state/compactor.svelte';
 	import { ponytailState } from '$lib/state/ponytail.svelte';
 	import Sidebar from '$lib/components/sidebar/sidebar.svelte';
 	import Navbar from '$lib/components/navbar/navbar.svelte';
@@ -37,7 +37,7 @@
 		keysState.load();
 		providerState.load();
 		antigravityState.load();
-		rtkState.load();
+		compactorState.load();
 		ponytailState.load();
 	}
 

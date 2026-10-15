@@ -13,35 +13,35 @@ import (
 
 	"lun-router/internal/antigravity"
 	"lun-router/internal/caveman"
+	"lun-router/internal/compactor"
 	"lun-router/internal/model"
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
-	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
 
 type CompletionHandler struct {
-	store           *store.KeyStore
-	modelStore      *store.ModelStore
-	client          *opencode.Client
-	agClient        *antigravity.Client
-	rtkService      *rtk.Service
-	cavemanService  *caveman.Service
-	ponytailService *ponytail.Service
+	store            *store.KeyStore
+	modelStore       *store.ModelStore
+	client           *opencode.Client
+	agClient         *antigravity.Client
+	compactorService *compactor.Service
+	cavemanService   *caveman.Service
+	ponytailService  *ponytail.Service
 }
 
-func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service) *CompletionHandler {
+func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service) *CompletionHandler {
 	if client == nil {
 		client = opencode.NewClient("", nil)
 	}
 	return &CompletionHandler{
-		store:           s,
-		modelStore:      ms,
-		client:          client,
-		agClient:        agClient,
-		rtkService:      rtkSvc,
-		cavemanService:  cavemanSvc,
-		ponytailService: ponytailSvc,
+		store:            s,
+		modelStore:       ms,
+		client:           client,
+		agClient:         agClient,
+		compactorService: compactorSvc,
+		cavemanService:   cavemanSvc,
+		ponytailService:  ponytailSvc,
 	}
 }
 
@@ -608,16 +608,13 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	clientWantsStream, _ := bodyMap["stream"].(bool)
 
-	// RTK: auto-compress tool output before dispatching to upstream LLMs
-	// Client opt-out via X-RTK: off, X-9Router-Token-Saver: off, or X-Token-Saver: off
-	clientOptOut := strings.EqualFold(r.Header.Get("X-RTK"), "off") ||
-		strings.EqualFold(r.Header.Get("X-9Router-Token-Saver"), "off") ||
-		strings.EqualFold(r.Header.Get("X-Token-Saver"), "off") ||
-		strings.EqualFold(r.URL.Query().Get("rtk"), "off") ||
-		strings.EqualFold(r.URL.Query().Get("token_saver"), "off")
+	// Compactor: auto-compress tool output before dispatching to upstream LLMs
+	// Client opt-out via X-Compact: off or ?compact=off
+	clientOptOut := strings.EqualFold(r.Header.Get("X-Compact"), "off") ||
+		strings.EqualFold(r.URL.Query().Get("compact"), "off")
 
-	if h.rtkService != nil {
-		h.rtkService.ProcessBody(bodyMap, clientOptOut)
+	if h.compactorService != nil {
+		h.compactorService.ProcessBody(bodyMap, clientOptOut)
 	}
 
 	// Caveman voice & prompt optimization (say less, cut output tokens)
