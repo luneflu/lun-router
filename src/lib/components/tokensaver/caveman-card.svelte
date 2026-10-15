@@ -29,7 +29,8 @@
 	let sampleType = $state<'react' | 'db' | 'go' | 'docker'>('react');
 	let testPrompt = $state(getSample('react'));
 	let copiedPrompt = $state(false);
-	let copiedOutput = $state(false);
+	let copiedNormal = $state(false);
+	let copiedCaveman = $state(false);
 	let showFullPrompt = $state(false);
 	let syncSuccessMsg = $state<string | null>(null);
 
@@ -48,12 +49,32 @@
 		{ id: 'gemini-3.8-flash', enabled: false }
 	]);
 
-	// Live model execution state
-	let isLiveRunning = $state(false);
-	let liveOutput = $state('');
-	let liveLatencyMs = $state<number | null>(null);
-	let liveError = $state<string | null>(null);
+	// Live model comparison state: Without Caveman vs With Caveman
+	let isNormalRunning = $state(false);
+	let normalOutput = $state('');
+	let normalLatencyMs = $state<number | null>(null);
+	let normalError = $state<string | null>(null);
+
+	let isCavemanRunning = $state(false);
+	let cavemanOutput = $state('');
+	let cavemanLatencyMs = $state<number | null>(null);
+	let cavemanError = $state<string | null>(null);
+
 	let abortController = $state<AbortController | null>(null);
+
+	let isComparing = $derived(isNormalRunning || isCavemanRunning);
+	let hasResults = $derived(!!(normalOutput || cavemanOutput || normalError || cavemanError));
+
+	let normalWordCount = $derived(normalOutput.split(/\s+/).filter(Boolean).length);
+	let cavemanWordCount = $derived(cavemanOutput.split(/\s+/).filter(Boolean).length);
+	let wordsSaved = $derived(
+		normalWordCount > cavemanWordCount ? normalWordCount - cavemanWordCount : 0
+	);
+	let savedPercent = $derived(
+		normalWordCount > 0 && normalWordCount > cavemanWordCount
+			? Math.round(((normalWordCount - cavemanWordCount) / normalWordCount) * 100)
+			: 0
+	);
 
 	let currentModels = $derived(
 		selectedProvider === 'opencode' ? openCodeModels : antigravityModels
@@ -118,75 +139,120 @@
 		sampleType = type;
 		testPrompt = getSample(type);
 		cavemanState.testResult = null;
-		liveOutput = '';
-		liveError = null;
-		liveLatencyMs = null;
+		resetComparison();
+	}
+
+	function resetComparison() {
+		normalOutput = '';
+		normalError = null;
+		normalLatencyMs = null;
+		cavemanOutput = '';
+		cavemanError = null;
+		cavemanLatencyMs = null;
 	}
 
 	async function handleRunSimulation() {
-		liveOutput = '';
-		liveError = null;
-		liveLatencyMs = null;
+		resetComparison();
 		await cavemanState.runTest(testPrompt, selectedProvider, selectedModel);
 	}
 
-	async function handleLiveRun() {
-		if (isLiveRunning) {
+	async function handleRunComparison() {
+		if (isComparing) {
 			abortController?.abort();
-			isLiveRunning = false;
+			isNormalRunning = false;
+			isCavemanRunning = false;
 			return;
 		}
 
-		isLiveRunning = true;
-		liveOutput = '';
-		liveError = null;
-		liveLatencyMs = null;
+		resetComparison();
+		cavemanState.testResult = null;
+		isNormalRunning = true;
+		isCavemanRunning = true;
 		abortController = new AbortController();
 
-		const start = performance.now();
+		const activeKey = keysState.items.find((k) => k.isActive)?.key;
 
-		try {
-			const activeKey = keysState.items.find((k) => k.isActive)?.key;
-
-			const full = await sendChatCompletion(
-				{
-					model: selectedModel,
-					messages: [{ role: 'user', content: testPrompt }],
-					stream: true
-				},
-				activeKey,
-				{
-					signal: abortController.signal,
-					headers: {
-						'X-Caveman': 'on',
-						'X-Caveman-Mode': cavemanState.mode
+		// 1. Without Caveman (Normal Model Response)
+		const runNormal = async () => {
+			const start = performance.now();
+			try {
+				const full = await sendChatCompletion(
+					{
+						model: selectedModel,
+						messages: [{ role: 'user', content: testPrompt }],
+						stream: true
 					},
-					onDelta: (delta: string) => {
-						liveOutput += delta;
+					activeKey,
+					{
+						signal: abortController?.signal,
+						headers: {
+							'X-Caveman': 'off'
+						},
+						onDelta: (delta: string) => {
+							normalOutput += delta;
+						}
 					}
+				);
+				if (!normalOutput && full) {
+					normalOutput = full;
 				}
-			);
-
-			if (!liveOutput && full) {
-				liveOutput = full;
-			}
-			liveLatencyMs = Math.round(performance.now() - start);
-
-			if (!liveOutput) {
-				liveError = 'Model returned empty response. Please check model status or quota.';
-			}
-		} catch (err: unknown) {
-			if (err instanceof Error && err.name === 'AbortError') {
-				if (!liveOutput) {
-					liveOutput = '[Generation stopped by user]';
+				normalLatencyMs = Math.round(performance.now() - start);
+				if (!normalOutput) {
+					normalError = 'Model returned empty response';
 				}
-			} else {
-				liveError = err instanceof Error ? err.message : 'Chat completion failed';
+			} catch (err: unknown) {
+				if (err instanceof Error && err.name === 'AbortError') {
+					if (!normalOutput) normalOutput = '[Stopped]';
+				} else {
+					normalError = err instanceof Error ? err.message : 'Execution failed';
+				}
+			} finally {
+				isNormalRunning = false;
 			}
-		} finally {
-			isLiveRunning = false;
-			abortController = null;
-		}
+		};
+
+		// 2. With Caveman (Concise Smart Caveman Response)
+		const runCaveman = async () => {
+			const start = performance.now();
+			try {
+				const full = await sendChatCompletion(
+					{
+						model: selectedModel,
+						messages: [{ role: 'user', content: testPrompt }],
+						stream: true
+					},
+					activeKey,
+					{
+						signal: abortController?.signal,
+						headers: {
+							'X-Caveman': 'on',
+							'X-Caveman-Mode': cavemanState.mode
+						},
+						onDelta: (delta: string) => {
+							cavemanOutput += delta;
+						}
+					}
+				);
+				if (!cavemanOutput && full) {
+					cavemanOutput = full;
+				}
+				cavemanLatencyMs = Math.round(performance.now() - start);
+				if (!cavemanOutput) {
+					cavemanError = 'Model returned empty response';
+				}
+			} catch (err: unknown) {
+				if (err instanceof Error && err.name === 'AbortError') {
+					if (!cavemanOutput) cavemanOutput = '[Stopped]';
+				} else {
+					cavemanError = err instanceof Error ? err.message : 'Execution failed';
+				}
+			} finally {
+				isCavemanRunning = false;
+			}
+		};
+
+		await Promise.allSettled([runNormal(), runCaveman()]);
+		abortController = null;
 	}
 
 	async function handleSyncUpstream() {
@@ -216,11 +282,21 @@
 		}
 	}
 
-	async function handleCopyLiveOutput() {
+	async function handleCopyNormal() {
 		try {
-			await navigator.clipboard.writeText(liveOutput);
-			copiedOutput = true;
-			setTimeout(() => (copiedOutput = false), 2000);
+			await navigator.clipboard.writeText(normalOutput);
+			copiedNormal = true;
+			setTimeout(() => (copiedNormal = false), 2000);
+		} catch {
+			// ignore
+		}
+	}
+
+	async function handleCopyCaveman() {
+		try {
+			await navigator.clipboard.writeText(cavemanOutput);
+			copiedCaveman = true;
+			setTimeout(() => (copiedCaveman = false), 2000);
 		} catch {
 			// ignore
 		}
@@ -443,14 +519,15 @@
 		</Card.Content>
 	</Card.Root>
 
-	<!-- Interactive Sandbox / Tester Card with Provider Selection -->
+	<!-- Interactive Sandbox / Tester Card with Side-by-Side Comparison -->
 	<Card.Root>
 		<Card.Header>
 			<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<div>
-					<Card.Title class="text-base font-semibold">Interactive Caveman Live Tester</Card.Title>
+					<Card.Title class="text-base font-semibold">Live Model Comparison</Card.Title>
 					<Card.Description>
-						Select a provider & model to preview prompt injection or run real live completions.
+						Run live requests with and without Caveman side-by-side to measure exact token
+						reductions.
 					</Card.Description>
 				</div>
 
@@ -575,42 +652,38 @@
 						variant="outline"
 						size="sm"
 						onclick={handleRunSimulation}
-						disabled={cavemanState.testing || isLiveRunning || !testPrompt.trim()}
+						disabled={cavemanState.testing || isComparing || !testPrompt.trim()}
 						class="h-8 gap-1.5 text-xs"
 					>
 						<SparklesIcon class="h-3.5 w-3.5 text-primary" />
-						<span>Simulate Payload</span>
+						<span>Simulate Directive</span>
 					</Button>
 
 					<Button
 						size="sm"
-						onclick={handleLiveRun}
+						onclick={handleRunComparison}
 						disabled={!testPrompt.trim()}
 						class="h-8 gap-1.5 text-xs"
-						variant={isLiveRunning ? 'destructive' : 'default'}
+						variant={isComparing ? 'destructive' : 'default'}
 					>
-						{#if isLiveRunning}
+						{#if isComparing}
 							<SquareIcon class="h-3.5 w-3.5 fill-current" />
-							<span>Stop Generation</span>
+							<span>Stop Stream</span>
 						{:else}
 							<PlayIcon class="h-3.5 w-3.5" />
-							<span>Run Live Model</span>
+							<span>Run Comparison (With vs Without)</span>
 						{/if}
 					</Button>
 				</div>
 			</div>
 
-			<!-- Live Model Execution Output -->
-			{#if isLiveRunning || liveOutput || liveError}
-				<div class="space-y-3 rounded-lg border bg-muted/20 p-4">
-					<div class="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
+			<!-- Live Side-by-Side Comparison Output -->
+			{#if isComparing || hasResults}
+				<div class="space-y-4 rounded-lg border bg-muted/20 p-4">
+					<div class="flex flex-wrap items-center justify-between gap-2 border-b pb-3">
 						<div class="flex items-center gap-2">
-							{#if selectedProvider === 'antigravity'}
-								<RocketIcon class="h-4 w-4 text-amber-500" />
-							{:else}
-								<BotIcon class="h-4 w-4 text-primary" />
-							{/if}
-							<span class="text-xs font-semibold">Live Model Output</span>
+							<SparklesIcon class="h-4 w-4 text-primary" />
+							<span class="text-xs font-semibold">Live Side-by-Side Comparison</span>
 							<Badge variant="secondary" class="font-mono text-[10px]">
 								{selectedModel}
 							</Badge>
@@ -619,47 +692,129 @@
 							</Badge>
 						</div>
 
-						<div class="flex items-center gap-3 text-xs">
-							{#if liveLatencyMs !== null}
-								<span class="font-mono text-[11px] text-muted-foreground">
-									{liveLatencyMs}ms
-								</span>
-							{/if}
-							{#if liveOutput}
-								<span class="font-mono text-[11px] text-emerald-500">
-									~{liveOutput.split(/\s+/).filter(Boolean).length} words
-								</span>
-								<Button
-									variant="ghost"
-									size="sm"
-									class="h-6 px-1.5 text-xs text-muted-foreground hover:text-foreground"
-									onclick={handleCopyLiveOutput}
-								>
-									{#if copiedOutput}
-										<CheckIcon class="h-3 w-3 text-emerald-500" />
-									{:else}
-										<CopyIcon class="h-3 w-3" />
+						{#if normalWordCount > 0 && cavemanWordCount > 0}
+							<div>
+								{#if savedPercent > 0}
+									<Badge
+										variant="default"
+										class="gap-1 bg-emerald-600 font-mono text-[11px] text-white hover:bg-emerald-600"
+									>
+										✨ -{savedPercent}% output words saved (~{wordsSaved} words / ~{Math.round(
+											wordsSaved * 1.33
+										)} tokens)
+									</Badge>
+								{:else}
+									<Badge variant="secondary" class="text-[10px]">Equal response length</Badge>
+								{/if}
+							</div>
+						{/if}
+					</div>
+
+					<div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+						<!-- Left Column: Without Caveman (Normal / Verbose) -->
+						<div class="space-y-2 rounded-lg border bg-card p-3.5">
+							<div class="flex items-center justify-between border-b pb-2 text-xs">
+								<div class="flex items-center gap-1.5 font-semibold text-muted-foreground">
+									<span class="inline-block h-2 w-2 rounded-full bg-zinc-500"></span>
+									<span>Without Caveman (Standard)</span>
+								</div>
+								<div class="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+									{#if normalLatencyMs !== null}
+										<span>{normalLatencyMs}ms</span>
 									{/if}
-								</Button>
+									{#if normalOutput}
+										<span>{normalWordCount} words</span>
+										<Button
+											variant="ghost"
+											size="sm"
+											class="h-6 px-1 text-xs"
+											onclick={handleCopyNormal}
+										>
+											{#if copiedNormal}
+												<CheckIcon class="h-3 w-3 text-emerald-500" />
+											{:else}
+												<CopyIcon class="h-3 w-3" />
+											{/if}
+										</Button>
+									{/if}
+								</div>
+							</div>
+
+							{#if normalError}
+								<div
+									class="flex items-center gap-2 rounded border border-destructive/20 bg-destructive/10 p-2.5 text-xs text-destructive"
+								>
+									<AlertCircleIcon class="h-3.5 w-3.5 shrink-0" />
+									<span>{normalError}</span>
+								</div>
+							{:else}
+								<div
+									class="max-h-72 overflow-y-auto rounded bg-zinc-950 p-3 font-mono text-xs leading-relaxed text-zinc-300"
+								>
+									<pre class="whitespace-pre-wrap">{normalOutput ||
+											(isNormalRunning ? 'Streaming normal verbose response...' : '')}</pre>
+								</div>
+							{/if}
+						</div>
+
+						<!-- Right Column: With Caveman (Terse Smart Caveman) -->
+						<div class="space-y-2 rounded-lg border border-primary/30 bg-primary/[0.02] p-3.5">
+							<div
+								class="flex items-center justify-between border-b border-primary/20 pb-2 text-xs"
+							>
+								<div class="flex items-center gap-1.5 font-semibold text-primary">
+									<span class="inline-block h-2 w-2 rounded-full bg-emerald-500"></span>
+									<span>With Caveman ({cavemanState.mode})</span>
+									{#if savedPercent > 0}
+										<Badge
+											variant="outline"
+											class="h-4 border-emerald-500/30 px-1 py-0 text-[10px] text-emerald-500"
+										>
+											-{savedPercent}%
+										</Badge>
+									{/if}
+								</div>
+								<div class="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
+									{#if cavemanLatencyMs !== null}
+										<span class="font-semibold text-emerald-500">{cavemanLatencyMs}ms</span>
+									{/if}
+									{#if cavemanOutput}
+										<span class="font-semibold text-emerald-500">{cavemanWordCount} words</span>
+										<Button
+											variant="ghost"
+											size="sm"
+											class="h-6 px-1 text-xs"
+											onclick={handleCopyCaveman}
+										>
+											{#if copiedCaveman}
+												<CheckIcon class="h-3 w-3 text-emerald-500" />
+											{:else}
+												<CopyIcon class="h-3 w-3" />
+											{/if}
+										</Button>
+									{/if}
+								</div>
+							</div>
+
+							{#if cavemanError}
+								<div
+									class="flex items-center gap-2 rounded border border-destructive/20 bg-destructive/10 p-2.5 text-xs text-destructive"
+								>
+									<AlertCircleIcon class="h-3.5 w-3.5 shrink-0" />
+									<span>{cavemanError}</span>
+								</div>
+							{:else}
+								<div
+									class="max-h-72 overflow-y-auto rounded bg-zinc-950 p-3 font-mono text-xs leading-relaxed text-zinc-100"
+								>
+									<pre class="whitespace-pre-wrap">{cavemanOutput ||
+											(isCavemanRunning
+												? 'Streaming smart caveman response (no fluff)...'
+												: '')}</pre>
+								</div>
 							{/if}
 						</div>
 					</div>
-
-					{#if liveError}
-						<div
-							class="flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/10 p-3 text-xs text-destructive"
-						>
-							<AlertCircleIcon class="h-4 w-4 shrink-0" />
-							<span>{liveError}</span>
-						</div>
-					{:else}
-						<div
-							class="max-h-64 overflow-y-auto rounded-md border bg-zinc-950 p-3.5 font-mono text-xs leading-relaxed text-zinc-100"
-						>
-							<pre class="whitespace-pre-wrap">{liveOutput ||
-									(isLiveRunning ? 'Generating response in smart caveman style...' : '')}</pre>
-						</div>
-					{/if}
 				</div>
 			{/if}
 
@@ -701,7 +856,7 @@
 							</div>
 						</div>
 
-						<!-- Caveman Voice Output Comparison -->
+						<!-- Caveman Voice Output Comparison Benchmark -->
 						<div class="space-y-1.5">
 							<div
 								class="flex items-center justify-between text-[11px] font-medium text-muted-foreground"
