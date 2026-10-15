@@ -19,10 +19,45 @@ var (
 	reCommitPureGraph = regexp.MustCompile(`^[*|/\\ ]+$`)
 	rePorcelainStatus = regexp.MustCompile(`^[ MADRCU?!][ MADRCU?!] `)
 	reLongStatus      = regexp.MustCompile(`^\s*(modified|new file|deleted|renamed|both modified):\s+(.+)$`)
+	reHunkHeader      = regexp.MustCompile(`^@@\s+-[0-9,]+\s+\+[0-9,]+\s+@@(.*)$`)
 )
 
-// GitDiff compacts unified diff: file headers, hunk-level truncation, +/-/context counting
+func diffHeaderPath(line string) string {
+	if strings.HasPrefix(line, "diff --git") {
+		parts := strings.Split(line, " b/")
+		if len(parts) > 1 {
+			return strings.Join(parts[1:], " b/")
+		}
+	} else if strings.HasPrefix(line, "diff --cc ") {
+		return strings.TrimSpace(strings.TrimPrefix(line, "diff --cc "))
+	} else if strings.HasPrefix(line, "diff --combined ") {
+		return strings.TrimSpace(strings.TrimPrefix(line, "diff --combined "))
+	}
+	return "unknown"
+}
+
+func hunkTruncationNote(deletions, additions int) string {
+	count := func(n int, noun string) string {
+		if n == 1 {
+			return fmt.Sprintf("1 %s", noun)
+		}
+		return fmt.Sprintf("%d %ss", n, noun)
+	}
+	if deletions == 0 && additions == 0 {
+		return ""
+	}
+	if deletions == 0 {
+		return fmt.Sprintf("  ... (%s truncated)", count(additions, "addition"))
+	}
+	if additions == 0 {
+		return fmt.Sprintf("  ... (%s truncated)", count(deletions, "deletion"))
+	}
+	return fmt.Sprintf("  ... (%s, %s truncated)", count(deletions, "deletion"), count(additions, "addition"))
+}
+
+// GitDiff compacts unified or combined diffs: headers, hunk-level truncation, leading context, +/- counting
 func GitDiff(diff string, maxLines int) string {
+	diff = StripAnsi(diff)
 	if maxLines <= 0 {
 		maxLines = GitDiffMaxLines
 	}
@@ -32,64 +67,81 @@ func GitDiff(diff string, maxLines int) string {
 	removed := 0
 	inHunk := false
 	hunkShown := 0
-	hunkSkipped := 0
+	skippedAdd := 0
+	skippedDel := 0
 	wasTruncated := false
+	var leadingContext []string
+	const maxLeadingContext = 3
+
+	flushLeading := func() {
+		for _, ctxLine := range leadingContext {
+			result = append(result, ctxLine)
+		}
+		leadingContext = nil
+	}
+
+	flushHunkTruncation := func() {
+		if note := hunkTruncationNote(skippedDel, skippedAdd); note != "" {
+			result = append(result, note)
+			wasTruncated = true
+			skippedDel = 0
+			skippedAdd = 0
+		}
+	}
 
 	lines := strings.Split(diff, "\n")
 
 outer:
 	for _, line := range lines {
-		if strings.HasPrefix(line, "diff --git") {
-			if hunkSkipped > 0 {
-				result = append(result, fmt.Sprintf("  ... (%d lines truncated)", hunkSkipped))
-				wasTruncated = true
-				hunkSkipped = 0
-			}
+		if strings.HasPrefix(line, "diff --") {
+			flushLeading()
+			flushHunkTruncation()
 			if currentFile != "" && (added > 0 || removed > 0) {
 				result = append(result, fmt.Sprintf("  +%d -%d", added, removed))
 			}
-			parts := strings.Split(line, " b/")
-			if len(parts) > 1 {
-				currentFile = strings.Join(parts[1:], " b/")
-			} else {
-				currentFile = "unknown"
-			}
+			currentFile = diffHeaderPath(line)
 			result = append(result, "\n"+currentFile)
 			added = 0
 			removed = 0
 			inHunk = false
 			hunkShown = 0
 		} else if strings.HasPrefix(line, "@@") {
-			if hunkSkipped > 0 {
-				result = append(result, fmt.Sprintf("  ... (%d lines truncated)", hunkSkipped))
-				wasTruncated = true
-				hunkSkipped = 0
-			}
+			flushLeading()
+			flushHunkTruncation()
 			inHunk = true
 			hunkShown = 0
 			result = append(result, "  "+line)
 		} else if inHunk {
-			if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
-				added++
+			isAdd := strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++")
+			isDel := strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---")
+
+			if isAdd || isDel {
+				if isAdd {
+					added++
+				}
+				if isDel {
+					removed++
+				}
 				if hunkShown < GitDiffHunkMaxLines {
+					flushLeading()
 					result = append(result, "  "+line)
 					hunkShown++
+				} else if isDel {
+					skippedDel++
 				} else {
-					hunkSkipped++
+					skippedAdd++
 				}
-			} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
-				removed++
-				if hunkShown < GitDiffHunkMaxLines {
-					result = append(result, "  "+line)
-					hunkShown++
-				} else {
-					hunkSkipped++
-				}
-			} else if hunkShown < GitDiffHunkMaxLines && !strings.HasPrefix(line, "\\") {
-				if hunkShown > 0 {
+				leadingContext = nil
+			} else if hunkShown > 0 {
+				if hunkShown < GitDiffHunkMaxLines && !strings.HasPrefix(line, "\\") {
 					result = append(result, "  "+line)
 					hunkShown++
 				}
+			} else if !strings.HasPrefix(line, "\\") {
+				if len(leadingContext) == maxLeadingContext {
+					leadingContext = leadingContext[1:]
+				}
+				leadingContext = append(leadingContext, "  "+line)
 			}
 		}
 
@@ -100,10 +152,9 @@ outer:
 		}
 	}
 
-	if hunkSkipped > 0 {
-		result = append(result, fmt.Sprintf("  ... (%d lines truncated)", hunkSkipped))
-		wasTruncated = true
-	}
+	flushLeading()
+	flushHunkTruncation()
+
 	if currentFile != "" && (added > 0 || removed > 0) {
 		result = append(result, fmt.Sprintf("  +%d -%d", added, removed))
 	}
@@ -116,6 +167,7 @@ outer:
 
 // GitStatus produces compact git status summary
 func GitStatus(input string) string {
+	input = StripAnsi(input)
 	lines := strings.Split(input, "\n")
 	if len(lines) == 0 || (len(lines) == 1 && strings.TrimSpace(lines[0]) == "") {
 		return "Clean working tree"
@@ -123,6 +175,7 @@ func GitStatus(input string) string {
 
 	branch := ""
 	var stagedFiles, modifiedFiles, untrackedFiles []string
+	var states []string
 	staged := 0
 	modified := 0
 	untracked := 0
@@ -132,6 +185,16 @@ func GitStatus(input string) string {
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" {
 			continue
+		}
+
+		if strings.Contains(raw, "rebase in progress") || strings.Contains(raw, "You are currently rebasing") {
+			states = append(states, "rebase in progress")
+		} else if strings.Contains(raw, "You have unmerged paths") {
+			states = append(states, "merge in progress. unresolved conflicts")
+		} else if strings.Contains(raw, "All conflicts fixed but you are still merging") {
+			states = append(states, "merge in progress. no conflicts")
+		} else if strings.Contains(raw, "You are currently cherry-picking") {
+			states = append(states, "cherry-pick in progress")
 		}
 
 		if strings.HasPrefix(raw, "On branch ") {
@@ -193,6 +256,9 @@ func GitStatus(input string) string {
 	if branch != "" {
 		out.WriteString(fmt.Sprintf("* %s\n", branch))
 	}
+	for _, st := range states {
+		out.WriteString(fmt.Sprintf("! %s\n", st))
+	}
 
 	if staged > 0 {
 		out.WriteString(fmt.Sprintf("+ Staged: %d files\n", staged))
@@ -241,7 +307,10 @@ func GitStatus(input string) string {
 	}
 
 	res := strings.TrimRight(out.String(), "\n")
-	if res == "" {
+	if res == "" || res == fmt.Sprintf("* %s", branch) {
+		if branch != "" {
+			return fmt.Sprintf("* %s\nclean — nothing to commit", branch)
+		}
 		return "Clean working tree"
 	}
 	return res
@@ -249,6 +318,7 @@ func GitStatus(input string) string {
 
 // GitLog compresses git log output: keeps commit headers, subjects, Author/Date; drops diffs/body
 func GitLog(text string, maxLines int) string {
+	text = StripAnsi(text)
 	if text == "" {
 		return ""
 	}
@@ -337,8 +407,9 @@ func GitLog(text string, maxLines int) string {
 	return result
 }
 
-// Grep groups matches by file and caps lines per file
+// Grep groups matches by file and caps lines per file (RTK format)
 func Grep(input string) string {
+	input = StripAnsi(input)
 	byFile := make(map[string][][2]string)
 	var fileOrder []string
 	total := 0
@@ -375,7 +446,7 @@ func Grep(input string) string {
 
 	sort.Strings(fileOrder)
 	var out strings.Builder
-	out.WriteString(fmt.Sprintf("%d matches in %dF:\n\n", total, len(fileOrder)))
+	out.WriteString(fmt.Sprintf("%d matches in %d files:\n\n", total, len(fileOrder)))
 
 	for _, file := range fileOrder {
 		matches := byFile[file]
@@ -388,7 +459,7 @@ func Grep(input string) string {
 			out.WriteString(fmt.Sprintf("  %4s: %s\n", m[0], strings.TrimSpace(m[1])))
 		}
 		if len(matches) > GrepPerFileMax {
-			out.WriteString(fmt.Sprintf("  +%d\n", len(matches)-GrepPerFileMax))
+			out.WriteString(fmt.Sprintf("  +%d more in %s\n", len(matches)-GrepPerFileMax, file))
 		}
 		out.WriteString("\n")
 	}
@@ -396,8 +467,9 @@ func Grep(input string) string {
 	return out.String()
 }
 
-// Find groups paths by directory, shows basenames, caps 10/dir and 20 dirs
+// Find groups paths by directory, shows basenames, caps 10/dir and 20 dirs (RTK format)
 func Find(input string) string {
+	input = StripAnsi(input)
 	lines := strings.Split(input, "\n")
 	var valid []string
 	for _, l := range lines {
@@ -475,6 +547,7 @@ func humanSize(bytes int64) string {
 
 // Ls produces compact ls -la output
 func Ls(input string) string {
+	input = StripAnsi(input)
 	var dirs []string
 	var files [][2]string
 	byExt := make(map[string]int)
@@ -570,6 +643,7 @@ func Ls(input string) string {
 
 // Tree strips summary line and caps long trees
 func Tree(input string) string {
+	input = StripAnsi(input)
 	lines := strings.Split(input, "\n")
 	if len(lines) == 0 {
 		return input
@@ -600,6 +674,7 @@ func Tree(input string) string {
 
 // DedupLog collapses consecutive duplicate lines
 func DedupLog(input string) string {
+	input = StripAnsi(input)
 	lines := strings.Split(input, "\n")
 	var out []string
 	var prev *string
@@ -645,6 +720,7 @@ func DedupLog(input string) string {
 
 // SmartTruncate keeps head and tail, drops middle
 func SmartTruncate(input string) string {
+	input = StripAnsi(input)
 	lines := strings.Split(input, "\n")
 	if len(lines) < SmartTruncateMinLines {
 		return input
@@ -658,6 +734,7 @@ func SmartTruncate(input string) string {
 
 // ReadNumbered truncates line-numbered files
 func ReadNumbered(input string) string {
+	input = StripAnsi(input)
 	lines := strings.Split(input, "\n")
 	if len(lines) < SmartTruncateMinLines {
 		return input
@@ -671,6 +748,7 @@ func ReadNumbered(input string) string {
 
 // SearchList compacts Cursor Glob search list
 func SearchList(input string) string {
+	input = StripAnsi(input)
 	lines := strings.Split(input, "\n")
 	if len(lines) == 0 {
 		return input
@@ -742,8 +820,204 @@ func SearchList(input string) string {
 	return strings.TrimRight(out.String(), "\n")
 }
 
+// CargoTest compresses cargo test output (RTK port)
+func CargoTest(input string) string {
+	input = StripAnsi(input)
+	lines := strings.Split(input, "\n")
+	var failures []string
+	var summaryLines []string
+	inFailureSection := false
+	var currentFailure []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "Compiling ") || strings.HasPrefix(trimmed, "Downloading ") ||
+			strings.HasPrefix(trimmed, "Downloaded ") || strings.HasPrefix(trimmed, "Finished ") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "running ") || (strings.HasPrefix(line, "test ") && strings.HasSuffix(line, "... ok")) {
+			continue
+		}
+
+		if line == "failures:" {
+			inFailureSection = true
+			continue
+		}
+
+		if inFailureSection {
+			if strings.HasPrefix(line, "test result:") {
+				inFailureSection = false
+				summaryLines = append(summaryLines, line)
+			} else if strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "---- ") {
+				currentFailure = append(currentFailure, line)
+			} else if trimmed == "" && len(currentFailure) > 0 {
+				failures = append(failures, strings.Join(currentFailure, "\n"))
+				currentFailure = nil
+			} else if trimmed != "" {
+				currentFailure = append(currentFailure, line)
+			}
+		}
+
+		if !inFailureSection && strings.HasPrefix(line, "test result:") {
+			summaryLines = append(summaryLines, line)
+		}
+	}
+
+	if len(currentFailure) > 0 {
+		failures = append(failures, strings.Join(currentFailure, "\n"))
+	}
+
+	var out strings.Builder
+	if len(failures) > 0 {
+		out.WriteString("failures:\n\n")
+		for _, f := range failures {
+			out.WriteString(f + "\n\n")
+		}
+	}
+	for _, s := range summaryLines {
+		out.WriteString(s + "\n")
+	}
+
+	res := strings.TrimRight(out.String(), "\n")
+	if res == "" {
+		return input
+	}
+	return res
+}
+
+// Pytest compresses pytest output (RTK port)
+func Pytest(input string) string {
+	input = StripAnsi(input)
+	lines := strings.Split(input, "\n")
+	var failures []string
+	var currentFailure []string
+	summaryLine := ""
+	inFailures := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "===") && strings.Contains(trimmed, "FAILURES") {
+			inFailures = true
+			continue
+		} else if strings.HasPrefix(trimmed, "===") && strings.Contains(trimmed, "short test summary") {
+			inFailures = false
+			if len(currentFailure) > 0 {
+				failures = append(failures, strings.Join(currentFailure, "\n"))
+				currentFailure = nil
+			}
+			continue
+		} else if strings.HasPrefix(trimmed, "===") && (strings.Contains(trimmed, "passed") || strings.Contains(trimmed, "failed") || strings.Contains(trimmed, "skipped")) {
+			summaryLine = trimmed
+			continue
+		} else if summaryLine == "" && (strings.Contains(trimmed, " passed") || strings.Contains(trimmed, " failed")) && strings.Contains(trimmed, " in ") {
+			summaryLine = trimmed
+			continue
+		}
+
+		if inFailures {
+			if strings.HasPrefix(trimmed, "___") {
+				if len(currentFailure) > 0 {
+					failures = append(failures, strings.Join(currentFailure, "\n"))
+					currentFailure = nil
+				}
+			}
+			currentFailure = append(currentFailure, line)
+		}
+	}
+
+	if len(currentFailure) > 0 {
+		failures = append(failures, strings.Join(currentFailure, "\n"))
+	}
+
+	var out strings.Builder
+	if len(failures) > 0 {
+		out.WriteString("FAILURES:\n")
+		for _, f := range failures {
+			out.WriteString(f + "\n\n")
+		}
+	}
+	if summaryLine != "" {
+		out.WriteString(summaryLine + "\n")
+	}
+
+	res := strings.TrimRight(out.String(), "\n")
+	if res == "" {
+		return input
+	}
+	return res
+}
+
+// GoTest compresses go test output (RTK port)
+func GoTest(input string) string {
+	input = StripAnsi(input)
+	lines := strings.Split(input, "\n")
+	var failures []string
+	var currentFailure []string
+	var packageResults []string
+	inFail := false
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "=== RUN") || strings.HasPrefix(line, "--- PASS:") {
+			if inFail && len(currentFailure) > 0 {
+				failures = append(failures, strings.Join(currentFailure, "\n"))
+				currentFailure = nil
+				inFail = false
+			}
+			continue
+		}
+
+		if strings.HasPrefix(line, "--- FAIL:") {
+			if inFail && len(currentFailure) > 0 {
+				failures = append(failures, strings.Join(currentFailure, "\n"))
+				currentFailure = nil
+			}
+			inFail = true
+			currentFailure = append(currentFailure, line)
+			continue
+		}
+
+		if inFail {
+			if strings.HasPrefix(line, "FAIL") || strings.HasPrefix(line, "ok  ") {
+				failures = append(failures, strings.Join(currentFailure, "\n"))
+				currentFailure = nil
+				inFail = false
+				packageResults = append(packageResults, line)
+				continue
+			}
+			currentFailure = append(currentFailure, line)
+			continue
+		}
+
+		if strings.HasPrefix(line, "FAIL") || strings.HasPrefix(line, "ok  ") {
+			packageResults = append(packageResults, line)
+		}
+	}
+
+	if len(currentFailure) > 0 {
+		failures = append(failures, strings.Join(currentFailure, "\n"))
+	}
+
+	var out strings.Builder
+	for _, f := range failures {
+		out.WriteString(f + "\n")
+	}
+	for _, p := range packageResults {
+		out.WriteString(p + "\n")
+	}
+
+	res := strings.TrimRight(out.String(), "\n")
+	if res == "" {
+		return input
+	}
+	return res
+}
+
 // BuildOutput compresses build tool output (npm, cargo, etc.)
 func BuildOutput(input string) string {
+	input = StripAnsi(input)
 	lines := strings.Split(input, "\n")
 	if len(lines) == 0 {
 		return input

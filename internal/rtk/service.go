@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -168,8 +169,14 @@ func (s *Service) GetStatus() map[string]any {
 	copy(recent, s.recentHits)
 	s.recentMu.Unlock()
 
+	systemPath, err := exec.LookPath("rtk")
+	systemAvailable := err == nil && systemPath != ""
+
 	return map[string]any{
-		"rtk_enabled": enabled,
+		"rtk_enabled":          enabled,
+		"engine":               "embedded-go",
+		"system_rtk_available": systemAvailable,
+		"system_rtk_path":      systemPath,
 		"stats": map[string]any{
 			"total_requests":      s.totalRequests.Load(),
 			"compressed_requests": s.compressedReqs.Load(),
@@ -190,6 +197,9 @@ func (s *Service) GetStatus() map[string]any {
 			"build-output",
 			"search-list",
 			"read-numbered",
+			"cargo-test",
+			"pytest",
+			"go-test",
 			"dedup-log",
 			"smart-truncate",
 		},

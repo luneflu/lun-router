@@ -3,6 +3,9 @@ import { fetchTokenSaverStatus, updateTokenSaver, testTokenSaver } from '$lib/ap
 
 export class TokenSaverState {
 	rtkEnabled = $state(true);
+	engine = $state('embedded-go');
+	systemRtkAvailable = $state(false);
+	systemRtkPath = $state<string | undefined>(undefined);
 	stats = $state<TokenSaverStats>({
 		total_requests: 0,
 		compressed_requests: 0,
@@ -38,6 +41,9 @@ export class TokenSaverState {
 			this.error = null;
 			const data = await fetchTokenSaverStatus();
 			this.rtkEnabled = data.rtk_enabled;
+			this.engine = data.engine ?? 'embedded-go';
+			this.systemRtkAvailable = !!data.system_rtk_available;
+			this.systemRtkPath = data.system_rtk_path;
 			this.stats = data.stats;
 			if (data.supported_filters) {
 				this.supportedFilters = data.supported_filters;

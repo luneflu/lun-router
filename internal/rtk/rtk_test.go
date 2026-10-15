@@ -66,8 +66,8 @@ func TestGitDiff(t *testing.T) {
 	if !strings.Contains(out, "foo.js") {
 		t.Errorf("expected foo.js in output")
 	}
-	if !strings.Contains(out, "lines truncated") {
-		t.Errorf("expected lines truncated in output")
+	if !strings.Contains(out, "truncated") {
+		t.Errorf("expected truncated in output")
 	}
 	if len(out) >= len(input) {
 		t.Errorf("expected compressed diff to be smaller than input")
@@ -94,8 +94,8 @@ func TestGitStatus(t *testing.T) {
 func TestGrep(t *testing.T) {
 	input := makeGrepOutput()
 	out := Grep(input)
-	if !strings.Contains(out, "50 matches in 2F:") {
-		t.Errorf("expected '50 matches in 2F:' in output: %s", out)
+	if !strings.Contains(out, "50 matches in 2 files:") && !strings.Contains(out, "50 matches in 2F:") {
+		t.Errorf("expected matches header in output: %s", out)
 	}
 	if !strings.Contains(out, "[file] src/foo.js (40):") {
 		t.Errorf("expected '[file] src/foo.js (40):' in output: %s", out)
@@ -200,8 +200,106 @@ func TestCompressMessages(t *testing.T) {
 	msgs := body["messages"].([]any)
 	toolMsg := msgs[1].(map[string]any)
 	content := toolMsg["content"].(string)
-	if !strings.Contains(content, "lines truncated") {
+	if !strings.Contains(content, "truncated") {
 		t.Errorf("expected content to be compressed in-place")
+	}
+}
+
+func TestStripAnsi(t *testing.T) {
+	colored := "\x1b[32mPASS\x1b[0m test_foo"
+	clean := StripAnsi(colored)
+	if clean != "PASS test_foo" {
+		t.Errorf("expected 'PASS test_foo', got %q", clean)
+	}
+}
+
+func TestCargoTest(t *testing.T) {
+	input := strings.Join([]string{
+		"   Compiling mypkg v0.1.0",
+		"    Finished test [unoptimized + debuginfo] in 0.82s",
+		"     Running unittests src/lib.rs",
+		"running 20 tests",
+		"test tests::test_1 ... ok",
+		"test tests::test_2 ... ok",
+		"test tests::test_fail ... FAILED",
+		"",
+		"failures:",
+		"",
+		"---- tests::test_fail stdout ----",
+		"thread 'main' panicked at 'assertion failed: 1 == 2', src/lib.rs:42:9",
+		"",
+		"failures:",
+		"    tests::test_fail",
+		"",
+		"test result: FAILED. 19 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out",
+	}, "\n")
+
+	out := CargoTest(input)
+	if !strings.Contains(out, "failures:") {
+		t.Errorf("expected failures section in output")
+	}
+	if !strings.Contains(out, "tests::test_fail") {
+		t.Errorf("expected failed test name in output")
+	}
+	if strings.Contains(out, "test tests::test_1 ... ok") {
+		t.Errorf("expected passing test line to be omitted")
+	}
+	if strings.Contains(out, "Compiling mypkg") {
+		t.Errorf("expected Compiling line to be omitted")
+	}
+}
+
+func TestPytest(t *testing.T) {
+	input := strings.Join([]string{
+		"============================= test session starts ==============================",
+		"platform darwin -- Python 3.11.0",
+		"collected 10 items",
+		"",
+		"tests/test_basic.py .F.......                                            [100%]",
+		"",
+		"=================================== FAILURES ===================================",
+		"__________________________________ test_fail ___________________________________",
+		"    def test_fail():",
+		">       assert 1 == 2",
+		"E       assert 1 == 2",
+		"",
+		"tests/test_basic.py:5: AssertionError",
+		"=========================== short test summary info ============================",
+		"FAILED tests/test_basic.py::test_fail - assert 1 == 2",
+		"========================= 1 failed, 9 passed in 0.12s ==========================",
+	}, "\n")
+
+	out := Pytest(input)
+	if !strings.Contains(out, "FAILURES:") {
+		t.Errorf("expected FAILURES section in output: %s", out)
+	}
+	if !strings.Contains(out, "assert 1 == 2") {
+		t.Errorf("expected failure detail in output")
+	}
+	if strings.Contains(out, "test session starts") {
+		t.Errorf("expected header to be omitted")
+	}
+}
+
+func TestGoTest(t *testing.T) {
+	input := strings.Join([]string{
+		"=== RUN   TestPass1",
+		"--- PASS: TestPass1 (0.00s)",
+		"=== RUN   TestPass2",
+		"--- PASS: TestPass2 (0.00s)",
+		"=== RUN   TestFail",
+		"--- FAIL: TestFail (0.00s)",
+		"    main_test.go:42: expected true got false",
+		"FAIL",
+		"FAIL\tmypkg\t0.05s",
+	}, "\n")
+
+	out := GoTest(input)
+	if !strings.Contains(out, "--- FAIL: TestFail") {
+		t.Errorf("expected failure header in output: %s", out)
+	}
+	if strings.Contains(out, "--- PASS: TestPass1") {
+		t.Errorf("expected passing test to be omitted")
 	}
 }
 

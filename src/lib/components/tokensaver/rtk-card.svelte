@@ -13,7 +13,9 @@
 	import CopyIcon from '@lucide/svelte/icons/copy';
 	import CheckIcon from '@lucide/svelte/icons/check';
 
-	let sampleType = $state<'diff' | 'status' | 'grep' | 'find' | 'build'>('diff');
+	let sampleType = $state<
+		'diff' | 'status' | 'grep' | 'find' | 'build' | 'cargo' | 'pytest' | 'gotest'
+	>('diff');
 	let testInput = $state(getSample('diff'));
 	let copied = $state(false);
 
@@ -23,7 +25,9 @@
 		return `${bytes} B`;
 	}
 
-	function getSample(type: 'diff' | 'status' | 'grep' | 'find' | 'build'): string {
+	function getSample(
+		type: 'diff' | 'status' | 'grep' | 'find' | 'build' | 'cargo' | 'pytest' | 'gotest'
+	): string {
 		if (type === 'diff') {
 			let diff = `diff --git a/src/app.js b/src/app.js\nindex 1234abc..5678def 100644\n--- a/src/app.js\n+++ b/src/app.js\n@@ -1,5 +1,180 @@\n`;
 			for (let i = 1; i <= 150; i++) {
@@ -54,10 +58,21 @@
 			}
 			return f.trimEnd();
 		}
+		if (type === 'cargo') {
+			return `   Compiling myapp v0.1.0\n    Finished test [unoptimized + debuginfo] in 0.82s\n     Running unittests src/lib.rs\nrunning 35 tests\ntest tests::test_1 ... ok\ntest tests::test_2 ... ok\ntest tests::test_fail ... FAILED\n\nfailures:\n\n---- tests::test_fail stdout ----\nthread 'main' panicked at 'assertion failed: 1 == 2', src/lib.rs:42:9\n\nfailures:\n    tests::test_fail\n\ntest result: FAILED. 34 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out`;
+		}
+		if (type === 'pytest') {
+			return `============================= test session starts ==============================\nplatform darwin -- Python 3.11.0\ncollected 45 items\n\ntests/test_app.py .........................F.................            [100%]\n\n=================================== FAILURES ===================================\n__________________________________ test_fail ___________________________________\n    def test_fail():\n>       assert 1 == 2\nE       assert 1 == 2\n\ntests/test_app.py:5: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_app.py::test_fail - assert 1 == 2\n========================= 1 failed, 44 passed in 0.45s =========================`;
+		}
+		if (type === 'gotest') {
+			return `=== RUN   TestLoginSuccess\n--- PASS: TestLoginSuccess (0.01s)\n=== RUN   TestLogout\n--- PASS: TestLogout (0.00s)\n=== RUN   TestTokenExpiry\n--- FAIL: TestTokenExpiry (0.02s)\n    auth_test.go:58: token expired earlier than expected\nFAIL\nFAIL\tapp/auth\t0.035s\n=== RUN   TestDatabasePing\n--- PASS: TestDatabasePing (0.00s)\nPASS\nok  \tapp/db\t0.012s`;
+		}
 		return `Compiling foo v0.1.0\nCompiling bar v0.2.0\nCompiling baz v0.3.0\nDownloading serde v1.0.1\nDownloading tokio v1.2.0\nwarning: unused import: 'std::collections::HashMap'\n --> src/main.rs:2:5\n  |\n2 | use std::collections::HashMap;\n  |     ^^^^^^^^^^^^^^^^^^^^^^^^^\nFinished release [optimized] target(s) in 1.42s\nBUILD SUCCESS`;
 	}
 
-	function handleSelectSample(type: 'diff' | 'status' | 'grep' | 'find' | 'build') {
+	function handleSelectSample(
+		type: 'diff' | 'status' | 'grep' | 'find' | 'build' | 'cargo' | 'pytest' | 'gotest'
+	) {
 		sampleType = type;
 		testInput = getSample(type);
 		tokenSaverState.testResult = null;
@@ -95,7 +110,12 @@
 							>
 								{tokenSaverState.rtkEnabled ? 'Active' : 'Disabled'}
 							</Badge>
-							<Badge variant="secondary" class="text-[10px]">Built-in</Badge>
+							<Badge variant="secondary" class="text-[10px]">Embedded Go (Fast)</Badge>
+							{#if tokenSaverState.systemRtkAvailable}
+								<Badge variant="outline" class="border-emerald-500/30 text-[10px] text-emerald-500">
+									CLI RTK Detected
+								</Badge>
+							{/if}
 						</div>
 						<Card.Description class="text-xs">
 							Auto-compress tool outputs (<code class="text-[11px]">git diff</code>,
@@ -246,6 +266,30 @@
 					onclick={() => handleSelectSample('find')}
 				>
 					Find
+				</Button>
+				<Button
+					variant={sampleType === 'cargo' ? 'default' : 'outline'}
+					size="sm"
+					class="h-7 text-xs"
+					onclick={() => handleSelectSample('cargo')}
+				>
+					Cargo Test
+				</Button>
+				<Button
+					variant={sampleType === 'pytest' ? 'default' : 'outline'}
+					size="sm"
+					class="h-7 text-xs"
+					onclick={() => handleSelectSample('pytest')}
+				>
+					Pytest
+				</Button>
+				<Button
+					variant={sampleType === 'gotest' ? 'default' : 'outline'}
+					size="sm"
+					class="h-7 text-xs"
+					onclick={() => handleSelectSample('gotest')}
+				>
+					Go Test
 				</Button>
 				<Button
 					variant={sampleType === 'build' ? 'default' : 'outline'}

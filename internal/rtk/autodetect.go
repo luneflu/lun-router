@@ -4,10 +4,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
-	reGitDiffHead   = regexp.MustCompile(`(?m)^diff --git `)
+	reGitDiffHead   = regexp.MustCompile(`(?m)^diff --(git|cc|combined) `)
 	reGitDiffHunk   = regexp.MustCompile(`(?m)^@@ `)
 	reGitStatusHead = regexp.MustCompile(`(?m)^On branch |^nothing to commit|^Changes (not |to be )|^Untracked files:`)
 	reBuildOutput   = regexp.MustCompile(`(?im)^(npm (warn|error|ERR!)|yarn (warn|error)|\s*Compiling\s+\S+|\s*Downloading\s+\S+|added \d+ package|\[ERROR\]|BUILD (SUCCESS|FAILED)|\s*Finished\s+|Successfully (installed|built)|ERROR:)`)
@@ -19,10 +20,30 @@ var (
 
 type FilterFunc func(string) string
 
+func safeHead(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
+}
+
 func AutoDetectFilter(text string) (FilterFunc, string) {
-	head := text
-	if len(head) > DetectWindow {
-		head = head[:DetectWindow]
+	clean := StripAnsi(text)
+	head := safeHead(clean, DetectWindow)
+
+	// Test output autodetection (matching official RTK pipe_cmd.rs)
+	if strings.Contains(head, "test result:") && strings.Contains(head, "passed;") {
+		return CargoTest, "cargo-test"
+	}
+	if strings.Contains(head, "=== test session starts") || (strings.Contains(head, "===") && strings.Contains(head, "FAILURES")) {
+		return Pytest, "pytest"
+	}
+	if (strings.Contains(head, "=== RUN") && (strings.Contains(head, "--- PASS:") || strings.Contains(head, "--- FAIL:"))) ||
+		(strings.HasPrefix(strings.TrimSpace(head), "--- FAIL:") || (strings.Contains(head, "--- FAIL:") && strings.Contains(head, "FAIL\t"))) {
+		return GoTest, "go-test"
 	}
 
 	if reCommitHeader.MatchString(head) {
@@ -94,7 +115,7 @@ func AutoDetectFilter(text string) (FilterFunc, string) {
 		return SearchList, "search-list"
 	}
 
-	allLines := strings.Split(text, "\n")
+	allLines := strings.Split(clean, "\n")
 	if len(allLines) >= SmartTruncateMinLines && isLineNumbered(allLines) {
 		return ReadNumbered, "read-numbered"
 	}

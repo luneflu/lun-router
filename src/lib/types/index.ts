@@ -78,6 +78,9 @@ export interface TokenSaverStats {
 
 export interface TokenSaverStatus {
 	rtk_enabled: boolean;
+	engine?: string;
+	system_rtk_available?: boolean;
+	system_rtk_path?: string;
 	stats: TokenSaverStats;
 	supported_filters: string[];
 }
