@@ -24,11 +24,12 @@ type Config struct {
 
 // Service manages password authentication and session tokens
 type Service struct {
-	mu         sync.RWMutex
-	filePath   string
-	config     Config
-	sessions   map[string]time.Time
-	sessionTTL time.Duration
+	mu           sync.RWMutex
+	filePath     string
+	sessionsPath string
+	config       Config
+	sessions     map[string]time.Time
+	sessionTTL   time.Duration
 }
 
 // NewService loads or initializes auth configuration from data directory
@@ -38,10 +39,12 @@ func NewService(dataDir string) (*Service, error) {
 	}
 
 	svc := &Service{
-		filePath:   filepath.Join(dataDir, "auth.json"),
-		sessions:   make(map[string]time.Time),
-		sessionTTL: 30 * 24 * time.Hour, // 30 days
+		filePath:     filepath.Join(dataDir, "auth.json"),
+		sessionsPath: filepath.Join(dataDir, "sessions.json"),
+		sessions:     make(map[string]time.Time),
+		sessionTTL:   30 * 24 * time.Hour, // 30 days
 	}
+	svc.loadSessions()
 
 	if data, err := os.ReadFile(svc.filePath); err == nil {
 		if err := json.Unmarshal(data, &svc.config); err != nil {
@@ -163,6 +166,7 @@ func (s *Service) CreateSession() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[token] = time.Now().Add(s.sessionTTL)
+	_ = s.saveSessionsLocked()
 	return token, nil
 }
 
@@ -182,6 +186,7 @@ func (s *Service) ValidateSession(token string) bool {
 
 	if time.Now().After(expiry) {
 		delete(s.sessions, token)
+		_ = s.saveSessionsLocked()
 		return false
 	}
 
@@ -193,6 +198,33 @@ func (s *Service) RevokeSession(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, token)
+	_ = s.saveSessionsLocked()
+}
+
+// loadSessions restores persisted sessions, so a server restart does not log everyone out.
+func (s *Service) loadSessions() {
+	data, err := os.ReadFile(s.sessionsPath)
+	if err != nil {
+		return
+	}
+	var stored map[string]time.Time
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return
+	}
+	now := time.Now()
+	for token, expiry := range stored {
+		if now.Before(expiry) {
+			s.sessions[token] = expiry
+		}
+	}
+}
+
+func (s *Service) saveSessionsLocked() error {
+	data, err := json.MarshalIndent(s.sessions, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal sessions: %w", err)
+	}
+	return os.WriteFile(s.sessionsPath, data, 0600)
 }
 
 func (s *Service) saveLocked() error {

@@ -128,3 +128,36 @@ func TestAuthEnvAutoInit(t *testing.T) {
 		t.Fatalf("expected auth.json to exist: %v", err)
 	}
 }
+
+func TestSessionPersistsAcrossRestart(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	svc, err := NewService(tmpDir)
+	if err != nil {
+		t.Fatalf("NewService error: %v", err)
+	}
+	if err := svc.SetupPassword("superSecret123!"); err != nil {
+		t.Fatalf("SetupPassword failed: %v", err)
+	}
+	token, err := svc.CreateSession()
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	restarted, err := NewService(tmpDir)
+	if err != nil {
+		t.Fatalf("NewService after restart error: %v", err)
+	}
+	if !restarted.ValidateSession(token) {
+		t.Fatal("expected session to survive a service restart")
+	}
+
+	restarted.RevokeSession(token)
+	again, err := NewService(tmpDir)
+	if err != nil {
+		t.Fatalf("NewService after revoke error: %v", err)
+	}
+	if again.ValidateSession(token) {
+		t.Fatal("expected revoked session to stay revoked after restart")
+	}
+}
