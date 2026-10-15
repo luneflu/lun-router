@@ -3,6 +3,7 @@ import type { ChatCompletionRequest } from '$lib/types';
 export interface CompletionCallbacks {
 	onDelta?: (delta: string) => void;
 	signal?: AbortSignal;
+	headers?: Record<string, string>;
 }
 
 export async function sendChatCompletion(
@@ -11,7 +12,8 @@ export async function sendChatCompletion(
 	callbacks?: CompletionCallbacks
 ): Promise<string> {
 	const headers: Record<string, string> = {
-		'Content-Type': 'application/json'
+		'Content-Type': 'application/json',
+		...(callbacks?.headers || {})
 	};
 	if (apiKey) {
 		headers['Authorization'] = `Bearer ${apiKey}`;

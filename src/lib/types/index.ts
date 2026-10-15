@@ -124,6 +124,8 @@ export interface CavemanStatus {
 
 export interface CavemanTestResult {
 	applied: boolean;
+	provider?: string;
+	model?: string;
 	mode: string;
 	injected_prompt: string;
 	messages: Array<{ role: string; content: string }>;

@@ -106,6 +106,8 @@ func (h *CavemanHandler) TestPrompt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
+		Provider    string `json:"provider"`
+		Model       string `json:"model"`
 		Mode        string `json:"mode"`
 		UserPrompt  string `json:"user_prompt"`
 		SystemPrior string `json:"system_prior"`
@@ -118,6 +120,16 @@ func (h *CavemanHandler) TestPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Provider == "" {
+		req.Provider = "opencode"
+	}
+	if req.Model == "" {
+		if req.Provider == "antigravity" {
+			req.Model = "gemini-3.8-flash"
+		} else {
+			req.Model = "big-pickle"
+		}
+	}
 	if req.UserPrompt == "" {
 		req.UserPrompt = "Why is my React component re-rendering on every keystroke?"
 	}
@@ -135,6 +147,7 @@ func (h *CavemanHandler) TestPrompt(w http.ResponseWriter, r *http.Request) {
 	})
 
 	body := map[string]any{
+		"model":    req.Model,
 		"messages": messages,
 	}
 
@@ -157,6 +170,8 @@ func (h *CavemanHandler) TestPrompt(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"applied":            applied,
+		"provider":           req.Provider,
+		"model":              req.Model,
 		"mode":               req.Mode,
 		"injected_prompt":    injectedPrompt,
 		"messages":           injectedMessages,

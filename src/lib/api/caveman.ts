@@ -42,6 +42,8 @@ export async function syncCavemanUpstream(): Promise<{
 }
 
 export async function testCavemanPrompt(payload: {
+	provider?: string;
+	model?: string;
 	mode?: string;
 	user_prompt?: string;
 	system_prior?: string;

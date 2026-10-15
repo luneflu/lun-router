@@ -131,11 +131,13 @@ export class CavemanState {
 		}
 	}
 
-	async runTest(userPrompt: string, systemPrior?: string) {
+	async runTest(userPrompt: string, provider?: string, model?: string, systemPrior?: string) {
 		try {
 			this.testing = true;
 			this.error = null;
 			const res = await testCavemanPrompt({
+				provider: provider || 'opencode',
+				model: model || 'big-pickle',
 				mode: this.mode,
 				user_prompt: userPrompt,
 				system_prior: systemPrior

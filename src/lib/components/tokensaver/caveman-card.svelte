@@ -1,9 +1,13 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import * as Card from '$lib/components/ui/card';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
 	import { cavemanState } from '$lib/state/caveman.svelte';
+	import { sendChatCompletion } from '$lib/api/completions';
+	import { fetchProviderModels } from '$lib/api/providers';
+
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import CopyIcon from '@lucide/svelte/icons/copy';
@@ -11,12 +15,76 @@
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import GitCommitIcon from '@lucide/svelte/icons/git-commit';
+	import BotIcon from '@lucide/svelte/icons/bot';
+	import RocketIcon from '@lucide/svelte/icons/rocket';
+	import SquareIcon from '@lucide/svelte/icons/square';
+	import AlertCircleIcon from '@lucide/svelte/icons/alert-circle';
 
 	let sampleType = $state<'react' | 'db' | 'go' | 'docker'>('react');
 	let testPrompt = $state(getSample('react'));
 	let copiedPrompt = $state(false);
+	let copiedOutput = $state(false);
 	let showFullPrompt = $state(false);
 	let syncSuccessMsg = $state<string | null>(null);
+
+	// Provider & Model selection for live testing
+	let selectedProvider = $state<'opencode' | 'antigravity'>('opencode');
+	let selectedModel = $state('big-pickle');
+	let openCodeModels = $state<string[]>([
+		'big-pickle',
+		'muse-spark-1.3-contributor-free',
+		'nemotron-3.5-lightning-free',
+		'cat-jam-free',
+		'mimo-v2.6-flash-free',
+		'space-bunny-free',
+		'deepseek-chat',
+		'gpt-4o',
+		'claude-3-5-sonnet'
+	]);
+	const antigravityModels = [
+		'gemini-3.8-flash',
+		'gemini-3.8-pro',
+		'gemini-3.8-ultra',
+		'claude-3-7-sonnet',
+		'claude-3-5-sonnet',
+		'gemini-2.5-flash',
+		'gemini-2.5-pro'
+	];
+
+	// Live model execution state
+	let isLiveRunning = $state(false);
+	let liveOutput = $state('');
+	let liveLatencyMs = $state<number | null>(null);
+	let liveError = $state<string | null>(null);
+	let abortController = $state<AbortController | null>(null);
+
+	let currentModels = $derived(
+		selectedProvider === 'opencode' ? openCodeModels : antigravityModels
+	);
+
+	onMount(() => {
+		fetchProviderModels('opencode')
+			.then((res) => {
+				if (res.models && res.models.length > 0) {
+					const ids = res.models.filter((m) => m.enabled).map((m) => m.id);
+					if (ids.length > 0) {
+						openCodeModels = Array.from(new Set([...ids, ...openCodeModels]));
+					}
+				}
+			})
+			.catch(() => {
+				// use defaults
+			});
+	});
+
+	function handleProviderChange(prov: 'opencode' | 'antigravity') {
+		selectedProvider = prov;
+		if (prov === 'antigravity') {
+			selectedModel = 'gemini-3.8-flash';
+		} else {
+			selectedModel = 'big-pickle';
+		}
+	}
 
 	function getSample(type: 'react' | 'db' | 'go' | 'docker'): string {
 		switch (type) {
@@ -35,10 +103,63 @@
 		sampleType = type;
 		testPrompt = getSample(type);
 		cavemanState.testResult = null;
+		liveOutput = '';
+		liveError = null;
+		liveLatencyMs = null;
 	}
 
-	async function handleRunTest() {
-		await cavemanState.runTest(testPrompt);
+	async function handleRunSimulation() {
+		liveOutput = '';
+		liveError = null;
+		liveLatencyMs = null;
+		await cavemanState.runTest(testPrompt, selectedProvider, selectedModel);
+	}
+
+	async function handleLiveRun() {
+		if (isLiveRunning) {
+			abortController?.abort();
+			isLiveRunning = false;
+			return;
+		}
+
+		isLiveRunning = true;
+		liveOutput = '';
+		liveError = null;
+		liveLatencyMs = null;
+		abortController = new AbortController();
+
+		const start = performance.now();
+
+		try {
+			await sendChatCompletion(
+				{
+					model: selectedModel,
+					messages: [{ role: 'user', content: testPrompt }],
+					stream: true
+				},
+				undefined,
+				{
+					signal: abortController.signal,
+					headers: {
+						'X-Caveman': 'on',
+						'X-Caveman-Mode': cavemanState.mode
+					},
+					onDelta: (delta: string) => {
+						liveOutput += delta;
+					}
+				}
+			);
+			liveLatencyMs = Math.round(performance.now() - start);
+		} catch (err: unknown) {
+			if (err instanceof Error && err.name === 'AbortError') {
+				// Aborted by user
+			} else {
+				liveError = err instanceof Error ? err.message : 'Chat completion failed';
+			}
+		} finally {
+			isLiveRunning = false;
+			abortController = null;
+		}
 	}
 
 	async function handleSyncUpstream() {
@@ -63,6 +184,16 @@
 			await navigator.clipboard.writeText(cavemanState.activePrompt);
 			copiedPrompt = true;
 			setTimeout(() => (copiedPrompt = false), 2000);
+		} catch {
+			// ignore
+		}
+	}
+
+	async function handleCopyLiveOutput() {
+		try {
+			await navigator.clipboard.writeText(liveOutput);
+			copiedOutput = true;
+			setTimeout(() => (copiedOutput = false), 2000);
 		} catch {
 			// ignore
 		}
@@ -285,17 +416,63 @@
 		</Card.Content>
 	</Card.Root>
 
-	<!-- Interactive Sandbox / Tester Card -->
+	<!-- Interactive Sandbox / Tester Card with Provider Selection -->
 	<Card.Root>
 		<Card.Header>
-			<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+			<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<div>
-					<Card.Title class="text-base font-semibold">Interactive Caveman Tester</Card.Title>
+					<Card.Title class="text-base font-semibold">Interactive Caveman Live Tester</Card.Title>
 					<Card.Description>
-						Preview how Caveman transforms prompts and models' response behavior in real-time.
+						Select a provider & model to preview prompt injection or run real live completions.
 					</Card.Description>
 				</div>
 
+				<!-- Provider Selection Buttons -->
+				<div class="flex items-center gap-2">
+					<div class="flex items-center rounded-lg border bg-muted/30 p-0.5">
+						<button
+							type="button"
+							onclick={() => handleProviderChange('opencode')}
+							class={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+								selectedProvider === 'opencode'
+									? 'bg-background text-foreground shadow-sm'
+									: 'text-muted-foreground hover:text-foreground'
+							}`}
+						>
+							<BotIcon class="h-3.5 w-3.5 text-primary" />
+							<span>OpenCode</span>
+						</button>
+						<button
+							type="button"
+							onclick={() => handleProviderChange('antigravity')}
+							class={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+								selectedProvider === 'antigravity'
+									? 'bg-background text-foreground shadow-sm'
+									: 'text-muted-foreground hover:text-foreground'
+							}`}
+						>
+							<RocketIcon class="h-3.5 w-3.5 text-amber-500" />
+							<span>Antigravity</span>
+						</button>
+					</div>
+
+					<!-- Model Select Menu -->
+					<select
+						bind:value={selectedModel}
+						class="h-8 rounded-md border border-border bg-background px-2.5 font-mono text-xs focus:ring-1 focus:ring-ring focus:outline-none"
+					>
+						{#each currentModels as m (m)}
+							<option value={m}>{m}</option>
+						{/each}
+					</select>
+				</div>
+			</div>
+		</Card.Header>
+
+		<Card.Content class="space-y-4">
+			<!-- Quick Sample Presets -->
+			<div class="flex flex-wrap items-center justify-between gap-2">
+				<span class="text-xs font-medium text-muted-foreground">Sample Prompts:</span>
 				<div class="flex flex-wrap gap-1.5">
 					<Button
 						variant={sampleType === 'react' ? 'default' : 'outline'}
@@ -331,9 +508,8 @@
 					</Button>
 				</div>
 			</div>
-		</Card.Header>
 
-		<Card.Content class="space-y-4">
+			<!-- User Prompt Textarea -->
 			<div class="space-y-2">
 				<label for="prompt-input" class="text-xs font-medium text-muted-foreground">
 					User Question / Prompt:
@@ -347,18 +523,109 @@
 				></textarea>
 			</div>
 
-			<div class="flex justify-end">
-				<Button
-					size="sm"
-					onclick={handleRunTest}
-					disabled={cavemanState.testing || !testPrompt.trim()}
-					class="gap-1.5"
-				>
-					<PlayIcon class={`h-3.5 w-3.5 ${cavemanState.testing ? 'animate-pulse' : ''}`} />
-					{cavemanState.testing ? 'Simulating...' : 'Test Caveman Injection'}
-				</Button>
+			<!-- Action Buttons -->
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<div class="flex items-center gap-2 text-xs text-muted-foreground">
+					<span>Selected:</span>
+					<Badge variant="outline" class="font-mono text-[10px]">
+						{selectedProvider} / {selectedModel}
+					</Badge>
+				</div>
+
+				<div class="flex items-center gap-2">
+					<Button
+						variant="outline"
+						size="sm"
+						onclick={handleRunSimulation}
+						disabled={cavemanState.testing || isLiveRunning || !testPrompt.trim()}
+						class="h-8 gap-1.5 text-xs"
+					>
+						<SparklesIcon class="h-3.5 w-3.5 text-primary" />
+						<span>Simulate Payload</span>
+					</Button>
+
+					<Button
+						size="sm"
+						onclick={handleLiveRun}
+						disabled={!testPrompt.trim()}
+						class="h-8 gap-1.5 text-xs"
+						variant={isLiveRunning ? 'destructive' : 'default'}
+					>
+						{#if isLiveRunning}
+							<SquareIcon class="h-3.5 w-3.5 fill-current" />
+							<span>Stop Generation</span>
+						{:else}
+							<PlayIcon class="h-3.5 w-3.5" />
+							<span>Run Live Model</span>
+						{/if}
+					</Button>
+				</div>
 			</div>
 
+			<!-- Live Model Execution Output -->
+			{#if isLiveRunning || liveOutput || liveError}
+				<div class="space-y-3 rounded-lg border bg-muted/20 p-4">
+					<div class="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
+						<div class="flex items-center gap-2">
+							{#if selectedProvider === 'antigravity'}
+								<RocketIcon class="h-4 w-4 text-amber-500" />
+							{:else}
+								<BotIcon class="h-4 w-4 text-primary" />
+							{/if}
+							<span class="text-xs font-semibold">Live Model Output</span>
+							<Badge variant="secondary" class="font-mono text-[10px]">
+								{selectedModel}
+							</Badge>
+							<Badge variant="outline" class="font-mono text-[10px]">
+								Mode: {cavemanState.mode}
+							</Badge>
+						</div>
+
+						<div class="flex items-center gap-3 text-xs">
+							{#if liveLatencyMs !== null}
+								<span class="font-mono text-[11px] text-muted-foreground">
+									{liveLatencyMs}ms
+								</span>
+							{/if}
+							{#if liveOutput}
+								<span class="font-mono text-[11px] text-emerald-500">
+									~{liveOutput.split(/\s+/).filter(Boolean).length} words
+								</span>
+								<Button
+									variant="ghost"
+									size="sm"
+									class="h-6 px-1.5 text-xs text-muted-foreground hover:text-foreground"
+									onclick={handleCopyLiveOutput}
+								>
+									{#if copiedOutput}
+										<CheckIcon class="h-3 w-3 text-emerald-500" />
+									{:else}
+										<CopyIcon class="h-3 w-3" />
+									{/if}
+								</Button>
+							{/if}
+						</div>
+					</div>
+
+					{#if liveError}
+						<div
+							class="flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/10 p-3 text-xs text-destructive"
+						>
+							<AlertCircleIcon class="h-4 w-4 shrink-0" />
+							<span>{liveError}</span>
+						</div>
+					{:else}
+						<div
+							class="max-h-64 overflow-y-auto rounded-md border bg-zinc-950 p-3.5 font-mono text-xs leading-relaxed text-zinc-100"
+						>
+							<pre class="whitespace-pre-wrap">{liveOutput ||
+									(isLiveRunning ? 'Generating response in smart caveman style...' : '')}</pre>
+						</div>
+					{/if}
+				</div>
+			{/if}
+
+			<!-- Simulation Preview Box -->
 			{#if cavemanState.testResult}
 				<div class="space-y-4 rounded-lg border bg-muted/20 p-4">
 					<div class="flex flex-wrap items-center justify-between gap-2 border-b pb-3">
@@ -366,6 +633,12 @@
 							<SparklesIcon class="h-4 w-4 text-primary" />
 							<span class="text-xs font-semibold">Simulated Completion Payload</span>
 							<Badge variant="outline" class="font-mono text-[10px]">
+								Provider: {cavemanState.testResult.provider || selectedProvider}
+							</Badge>
+							<Badge variant="outline" class="font-mono text-[10px]">
+								Model: {cavemanState.testResult.model || selectedModel}
+							</Badge>
+							<Badge variant="secondary" class="font-mono text-[10px]">
 								Mode: {cavemanState.testResult.mode}
 							</Badge>
 						</div>
