@@ -130,7 +130,7 @@ func (h *PonytailHandler) TestPrompt(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.UserPrompt == "" {
-		req.UserPrompt = "Build me a rate limiter in Go with token bucket"
+		req.UserPrompt = "Build a rate limiter in Go for 10 req/s as a small, self-contained runnable example"
 	}
 
 	var messages []any

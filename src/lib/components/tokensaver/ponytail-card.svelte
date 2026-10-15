@@ -126,13 +126,13 @@
 	function getSample(type: 'ratelimit' | 'auth' | 'clone' | 'dialog'): string {
 		switch (type) {
 			case 'ratelimit':
-				return 'Write a simple HTTP rate limiter in Go for 10 requests per second per IP.';
+				return 'Write a simple HTTP rate limiter in Go for 10 requests per second per IP as a small, self-contained runnable example.';
 			case 'auth':
-				return 'Build an enterprise abstract authentication manager supporting multiple auth providers with factories and interfaces.';
+				return 'Build a lightweight JWT authentication middleware in TypeScript as a small, self-contained runnable example.';
 			case 'clone':
-				return 'How do I deep clone an object in modern JavaScript without installing lodash or other libraries?';
+				return 'How do I deep clone an object in modern JavaScript without libraries? Provide a small, self-contained example.';
 			case 'dialog':
-				return 'How do I implement a lightweight accessible modal dialog in vanilla HTML, CSS, and JS?';
+				return 'How do I implement a lightweight modal dialog in HTML/CSS/JS? Provide a small, self-contained example.';
 		}
 	}
 
@@ -152,9 +152,22 @@
 		ponytailLatencyMs = null;
 	}
 
+	function getEffectivePrompt(input: string): string {
+		const lower = input.toLowerCase();
+		if (
+			lower.includes('self-contained') ||
+			lower.includes('small example') ||
+			lower.includes('standalone')
+		) {
+			return input;
+		}
+		return `${input}\n\n(Provide a small, self-contained runnable example directly; no repository or directory scanning required)`;
+	}
+
 	async function handleRunSimulation() {
 		resetComparison();
-		await ponytailState.runTest(testPrompt, selectedProvider, selectedModel);
+		const promptToSend = getEffectivePrompt(testPrompt);
+		await ponytailState.runTest(promptToSend, selectedProvider, selectedModel);
 	}
 
 	async function handleRunComparison() {
@@ -172,6 +185,7 @@
 		abortController = new AbortController();
 
 		const activeKey = keysState.items.find((k) => k.isActive)?.key;
+		const promptToSend = getEffectivePrompt(testPrompt);
 
 		// 1. Without Ponytail (Standard response with potential over-engineering)
 		const runNormal = async () => {
@@ -180,7 +194,7 @@
 				const full = await sendChatCompletion(
 					{
 						model: selectedModel,
-						messages: [{ role: 'user', content: testPrompt }],
+						messages: [{ role: 'user', content: promptToSend }],
 						stream: true
 					},
 					activeKey,
@@ -220,7 +234,7 @@
 				const full = await sendChatCompletion(
 					{
 						model: selectedModel,
-						messages: [{ role: 'user', content: testPrompt }],
+						messages: [{ role: 'user', content: promptToSend }],
 						stream: true
 					},
 					activeKey,

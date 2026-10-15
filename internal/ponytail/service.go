@@ -426,7 +426,7 @@ func (s *Service) Apply(body map[string]any, headerPonytail, headerMode string) 
 		prompt = DefaultPonytailFullPrompt
 	}
 
-	ponytailInstruction := "\n\n[System directive: Lazy Senior Developer Guidance (" + mode + ")]\n" + prompt
+	ponytailInstruction := "\n\n[System directive: Lazy Senior Developer Guidance (" + mode + ")]\n" + prompt + "\nStandalone / testing queries: When no project repository or workspace directory is attached, do not scan or ask for files. Provide a small, self-contained runnable example directly."
 
 	// 1. Anthropic-style top-level "system"
 	if rawSys, ok := body["system"]; ok {
