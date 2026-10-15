@@ -13,4 +13,4 @@ fi
 echo "==> Compiling Go server with embedded frontend..."
 go build -o lun-router .
 
-echo "==> Done. Run ./lun-server to start server."
+echo "==> Done. Run ./lun-router to start server."
