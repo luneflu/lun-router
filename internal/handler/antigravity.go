@@ -226,7 +226,7 @@ func (h *AntigravityHandler) ListModels(w http.ResponseWriter, r *http.Request) 
 	for _, m := range catalog {
 		enabled := h.modelStore == nil || !h.modelStore.IsDisabled("antigravity", m)
 		item := ModelItem{
-			ID:      m,
+			ID:      antigravityPrefix + m,
 			Object:  "model",
 			OwnedBy: "antigravity",
 			Enabled: enabled,
@@ -292,9 +292,13 @@ func (h *AntigravityHandler) UpdateModels(w http.ResponseWriter, r *http.Request
 
 	var err error
 	if len(payload.Models) > 0 {
-		err = h.modelStore.SetBatchDisabled("antigravity", payload.Models, !payload.Enabled)
+		cleaned := make([]string, 0, len(payload.Models))
+		for _, m := range payload.Models {
+			cleaned = append(cleaned, antigravity.CleanModelID(m))
+		}
+		err = h.modelStore.SetBatchDisabled("antigravity", cleaned, !payload.Enabled)
 	} else if payload.Model != "" {
-		err = h.modelStore.SetDisabled("antigravity", payload.Model, !payload.Enabled)
+		err = h.modelStore.SetDisabled("antigravity", antigravity.CleanModelID(payload.Model), !payload.Enabled)
 	} else {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)

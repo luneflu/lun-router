@@ -529,6 +529,8 @@ func matchesPattern(pattern, candidate string) bool {
 // ResolveCapabilities determines model capabilities based on provider and model ID.
 func ResolveCapabilities(provider, modelID string) ModelCapabilities {
 	baseID := strings.TrimSpace(modelID)
+	// Advertised IDs are namespaced ("opencode/gpt-5.2"); patterns match the bare ID.
+	baseID = strings.TrimPrefix(baseID, provider+"/")
 	// Strip thinking suffix like "model(high)" if present
 	if idx := strings.LastIndex(baseID, "("); idx != -1 && strings.HasSuffix(baseID, ")") {
 		baseID = strings.TrimSpace(baseID[:idx])

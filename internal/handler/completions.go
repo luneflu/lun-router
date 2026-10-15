@@ -48,6 +48,12 @@ func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *openc
 type ModelItem = model.ModelItem
 type ModelCapabilities = model.ModelCapabilities
 
+// Model namespaces. Every advertised model ID is prefixed with its provider.
+const (
+	opencodePrefix    = "opencode/"
+	antigravityPrefix = "antigravity/"
+)
+
 // GET /v1/models (OpenAI-compatible catalog: returns only enabled models)
 func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 	rawModels := h.fetchAllModels(r)
@@ -55,6 +61,7 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 	var filtered []ModelItem
 	for _, m := range rawModels {
 		if h.modelStore == nil || !h.modelStore.IsDisabled("opencode", m.ID) {
+			m.ID = opencodePrefix + m.ID
 			filtered = append(filtered, m)
 		}
 	}
@@ -64,7 +71,7 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 		for _, m := range h.agClient.GetCatalogModels() {
 			if h.modelStore == nil || !h.modelStore.IsDisabled("antigravity", m) {
 				item := ModelItem{
-					ID:      m,
+					ID:      antigravityPrefix + m,
 					Object:  "model",
 					OwnedBy: "antigravity",
 					Enabled: true,
@@ -88,6 +95,7 @@ func (h *CompletionHandler) ProviderModels(w http.ResponseWriter, r *http.Reques
 
 	for i := range rawModels {
 		rawModels[i].Enabled = h.modelStore == nil || !h.modelStore.IsDisabled("opencode", rawModels[i].ID)
+		rawModels[i].ID = opencodePrefix + rawModels[i].ID
 	}
 
 	version := opencode.DefaultVersion
@@ -176,6 +184,11 @@ func (h *CompletionHandler) UpdateProviderModels(w http.ResponseWriter, r *http.
 		return
 	}
 
+	for i := range payload.Models {
+		payload.Models[i] = cleanOpenCodeID(payload.Models[i])
+	}
+	payload.Model = cleanOpenCodeID(payload.Model)
+
 	var err error
 	if len(payload.Models) > 0 {
 		err = h.modelStore.SetBatchDisabled("opencode", payload.Models, !payload.Enabled)
@@ -223,8 +236,9 @@ func (h *CompletionHandler) pingSingleModel(ctx context.Context, model string, p
 	}
 
 	// Antigravity Model Test
-	if antigravity.IsAntigravityModel(model) {
-		cleanModel := antigravity.CleanModelID(model)
+	provider, bareModel, _ := splitProviderPrefix(model)
+	if provider == "antigravity" || (provider == "" && h.isAntigravityModel(model)) {
+		cleanModel := antigravity.CleanModelID(bareModel)
 		if h.modelStore != nil && h.modelStore.IsDisabled("antigravity", cleanModel) {
 			return ModelTestResult{
 				OK:        false,
@@ -284,7 +298,7 @@ func (h *CompletionHandler) pingSingleModel(ctx context.Context, model string, p
 	}
 
 	// OpenCode Model Test
-	if h.modelStore != nil && h.modelStore.IsDisabled("opencode", model) {
+	if h.modelStore != nil && h.modelStore.IsDisabled("opencode", bareModel) {
 		return ModelTestResult{
 			OK:        false,
 			Model:     model,
@@ -298,7 +312,7 @@ func (h *CompletionHandler) pingSingleModel(ctx context.Context, model string, p
 
 	start := time.Now()
 	testBody := map[string]any{
-		"model": model,
+		"model": bareModel,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
@@ -426,6 +440,65 @@ func (h *CompletionHandler) TestModel(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(res)
 }
 
+// opencodeModelList returns the OpenCode Free catalogue (cached, no network).
+func opencodeModelList(client *opencode.Client) []string {
+	if client != nil && client.ModelManager() != nil {
+		return client.ModelManager().GetModels()
+	}
+	return opencode.FallbackModels
+}
+
+func containsModel(models []string, id string) bool {
+	for _, m := range models {
+		if m == id {
+			return true
+		}
+	}
+	return false
+}
+
+// isAntigravityModel resolves which provider owns a model ID. The opencode/ and
+// antigravity/ prefixes are explicit; bare IDs fall back to catalog ownership, where
+// a shared ID (gemini-3.8-flash, claude-sonnet-5-5, ...) stays with OpenCode Free.
+func (h *CompletionHandler) isAntigravityModel(model string) bool {
+	if provider, _, ok := splitProviderPrefix(model); ok {
+		return provider == "antigravity"
+	}
+	return antigravityShouldHandle(model, opencodeModelList(h.client))
+}
+
+func antigravityShouldHandle(model string, opencodeModels []string) bool {
+	clean := antigravity.CleanModelID(model)
+	if !antigravity.IsCatalogModel(clean) {
+		return false
+	}
+	return !containsModel(opencodeModels, clean)
+}
+
+// splitProviderPrefix resolves an explicit provider namespace. ok is false for a
+// bare ID, which keeps catalog-based routing.
+func splitProviderPrefix(model string) (provider, id string, ok bool) {
+	switch {
+	case strings.HasPrefix(model, opencodePrefix):
+		return "opencode", strings.TrimPrefix(model, opencodePrefix), true
+	case antigravity.HasAntigravityPrefix(model):
+		return "antigravity", antigravity.CleanModelID(model), true
+	default:
+		return "", model, false
+	}
+}
+
+func cleanOpenCodeID(model string) string {
+	return strings.TrimPrefix(model, opencodePrefix)
+}
+
+// isAntigravityFamilyModel reports Gemini/Claude IDs, which the Antigravity provider
+// owns. OpenCode Free still accepts them, but does not advertise them.
+func isAntigravityFamilyModel(id string) bool {
+	clean := strings.ToLower(antigravity.CleanModelID(id))
+	return strings.HasPrefix(clean, "gemini") || strings.HasPrefix(clean, "claude")
+}
+
 func (h *CompletionHandler) fetchAllModels(r *http.Request) []ModelItem {
 	data, err := h.client.FetchModels(r.Context())
 	if err == nil {
@@ -433,11 +506,17 @@ func (h *CompletionHandler) fetchAllModels(r *http.Request) []ModelItem {
 			Data []ModelItem `json:"data"`
 		}
 		if jsonErr := json.Unmarshal(data, &resp); jsonErr == nil && len(resp.Data) > 0 {
+			var list []ModelItem
 			for i := range resp.Data {
+				if isAntigravityFamilyModel(resp.Data[i].ID) {
+					// Antigravity serves Gemini/Claude; keep them out of the OpenCode Free list
+					continue
+				}
 				resp.Data[i].OwnedBy = "opencode"
 				model.EnrichModelItem(&resp.Data[i], "opencode")
+				list = append(list, resp.Data[i])
 			}
-			return resp.Data
+			return list
 		}
 	}
 
@@ -451,6 +530,9 @@ func (h *CompletionHandler) fetchAllModels(r *http.Request) []ModelItem {
 
 	var list []ModelItem
 	for _, m := range fallbackIDs {
+		if isAntigravityFamilyModel(m) {
+			continue
+		}
 		item := ModelItem{
 			ID:      m,
 			Object:  "model",
@@ -517,8 +599,12 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 	model, _ := bodyMap["model"].(string)
 	if model == "" {
 		model = "big-pickle"
-		bodyMap["model"] = model
 	}
+	modelProvider, bareModel, prefixed := splitProviderPrefix(model)
+	if prefixed {
+		model = bareModel
+	}
+	bodyMap["model"] = model
 
 	clientWantsStream, _ := bodyMap["stream"].(bool)
 
@@ -555,7 +641,7 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Check if this is an Antigravity model
-	if antigravity.IsAntigravityModel(model) {
+	if modelProvider == "antigravity" || (modelProvider == "" && h.isAntigravityModel(model)) {
 		cleanModel := antigravity.CleanModelID(model)
 		if h.modelStore != nil && h.modelStore.IsDisabled("antigravity", cleanModel) {
 			w.Header().Set("Content-Type", "application/json")
@@ -1000,4 +1086,3 @@ func handleAntigravityNonStreamResponse(w http.ResponseWriter, body io.Reader, m
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(openAIResp)
 }
-

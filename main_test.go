@@ -482,7 +482,7 @@ func TestOpenCodeModelEnableDisable(t *testing.T) {
 		t.Fatalf("expected non-empty models list")
 	}
 
-	targetModel := "big-pickle"
+	targetModel := "opencode/big-pickle"
 	var found bool
 	for _, m := range provResp.Models {
 		if m.ID == targetModel {
@@ -1049,7 +1049,7 @@ func TestResponsesStreamTranslation(t *testing.T) {
 	}
 }
 
-	func TestAntigravityAccountsAndProvider(t *testing.T) {
+func TestAntigravityAccountsAndProvider(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "lun-antigravity-test-*")
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
@@ -1620,7 +1620,7 @@ func TestDynamicModelSync(t *testing.T) {
 
 	foundDynamic := false
 	for _, m := range v1Data.Data {
-		if m.ID == "dynamic-model-alpha" {
+		if m.ID == "opencode/dynamic-model-alpha" {
 			foundDynamic = true
 			if m.Capabilities == nil {
 				t.Errorf("expected capabilities to be enriched for dynamic model")
@@ -1629,7 +1629,7 @@ func TestDynamicModelSync(t *testing.T) {
 		}
 	}
 	if !foundDynamic {
-		t.Errorf("expected dynamic-model-alpha to appear in /v1/models after refresh")
+		t.Errorf("expected opencode/dynamic-model-alpha to appear in /v1/models after refresh")
 	}
 
 	// 3. Antigravity catalog contains fallback models and exposes refresh

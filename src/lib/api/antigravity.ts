@@ -177,7 +177,7 @@ export async function fetchAntigravityModels(): Promise<{
 			'claude-opus-4-6-thinking',
 			'gpt-oss-120b-medium',
 			'gemini-3.1-flash-image'
-		].map((id) => ({ id, enabled: true })),
+		].map((id) => ({ id: `antigravity/${id}`, enabled: true })),
 		version: '2.11.0'
 	};
 }

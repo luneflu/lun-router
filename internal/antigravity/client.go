@@ -297,14 +297,22 @@ func (c *Client) Store() *AccountStore {
 	return c.store
 }
 
-func IsAntigravityModel(model string) bool {
+func HasAntigravityPrefix(model string) bool {
+	return strings.HasPrefix(model, "antigravity/")
+}
+
+func IsCatalogModel(model string) bool {
 	clean := CleanModelID(model)
 	for _, m := range CatalogModels {
 		if m == clean {
 			return true
 		}
 	}
-	return strings.HasPrefix(model, "antigravity/") || strings.HasPrefix(model, "ag/")
+	return false
+}
+
+func IsAntigravityModel(model string) bool {
+	return HasAntigravityPrefix(model) || IsCatalogModel(model)
 }
 
 func (c *Client) IsAntigravityModel(model string) bool {
@@ -314,13 +322,11 @@ func (c *Client) IsAntigravityModel(model string) bool {
 			return true
 		}
 	}
-	return strings.HasPrefix(model, "antigravity/") || strings.HasPrefix(model, "ag/")
+	return HasAntigravityPrefix(model)
 }
 
 func CleanModelID(model string) string {
-	model = strings.TrimPrefix(model, "antigravity/")
-	model = strings.TrimPrefix(model, "ag/")
-	return model
+	return strings.TrimPrefix(model, "antigravity/")
 }
 
 func GetModelFamily(model string) string {
@@ -753,9 +759,9 @@ func convertOpenAIMessagesToGemini(messages any) []map[string]any {
 func (c *Client) fetchSubscriptionAndProject(ctx context.Context, accessToken string) (string, string) {
 	meta := map[string]any{
 		"metadata": map[string]any{
-			"ideType":        "ANTIGRAVITY",
-			"ideVersion":     "2.11.0",
-			"pluginType":     "GEMINI",
+			"ideType":       "ANTIGRAVITY",
+			"ideVersion":    "2.11.0",
+			"pluginType":    "GEMINI",
 			"pluginVersion": "2.11.0",
 		},
 		"mode": 1,
@@ -903,7 +909,7 @@ func (c *Client) fetchQuotaSummary(ctx context.Context, accessToken, projectID s
 			if used < 0 {
 				used = 0
 			}
-			pct := math.Round(fraction * 1000) / 10
+			pct := math.Round(fraction*1000) / 10
 
 			if isGemini {
 				if isSession && quotas["gemini_session"].Name == "" {
@@ -1031,7 +1037,7 @@ func (c *Client) fetchAvailableModelsQuota(ctx context.Context, accessToken, pro
 		if used < 0 {
 			used = 0
 		}
-		pct := math.Round(fraction * 1000) / 10
+		pct := math.Round(fraction*1000) / 10
 
 		displayName := mData.DisplayName
 		if displayName == "" {

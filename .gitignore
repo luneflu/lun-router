@@ -24,8 +24,7 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
 # Go
-lun-server
-lun-router
+lun-router*
 data/
 
 9router
