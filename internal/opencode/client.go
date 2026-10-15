@@ -123,36 +123,24 @@ func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any, identi
 				if mMap, ok := m.(map[string]any); ok {
 					role, _ := mMap["role"].(string)
 					content, _ := mMap["content"].(string)
-					input = append(input, map[string]any{
-						"type": "message",
-						"role": role,
-						"content": []map[string]any{
-							{"type": "input_text", "text": content},
-						},
-					})
+					if item, valid := toResponsesMessage(role, content); valid {
+						input = append(input, item)
+					}
 				}
 			}
 		case []map[string]string:
 			for _, mMap := range msgs {
-				input = append(input, map[string]any{
-					"type": "message",
-					"role": mMap["role"],
-					"content": []map[string]any{
-						{"type": "input_text", "text": mMap["content"]},
-					},
-				})
+				if item, valid := toResponsesMessage(mMap["role"], mMap["content"]); valid {
+					input = append(input, item)
+				}
 			}
 		case []map[string]any:
 			for _, mMap := range msgs {
 				role, _ := mMap["role"].(string)
 				content, _ := mMap["content"].(string)
-				input = append(input, map[string]any{
-					"type": "message",
-					"role": role,
-					"content": []map[string]any{
-						{"type": "input_text", "text": content},
-					},
-				})
+				if item, valid := toResponsesMessage(role, content); valid {
+					input = append(input, item)
+				}
 			}
 		}
 
@@ -332,4 +320,21 @@ func AggregateSSEStream(r io.Reader, fallbackModel string) (map[string]any, erro
 			"total_tokens":      len(fullText.String()) / 4,
 		},
 	}, nil
+}
+
+func toResponsesMessage(role, content string) (map[string]any, bool) {
+	if role == "assistant" && strings.TrimSpace(content) == "" {
+		return nil, false
+	}
+	contentType := "input_text"
+	if role == "assistant" {
+		contentType = "output_text"
+	}
+	return map[string]any{
+		"type": "message",
+		"role": role,
+		"content": []map[string]any{
+			{"type": contentType, "text": content},
+		},
+	}, true
 }

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -877,5 +879,132 @@ func TestSPAStaticServing(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405 for POST to static route, got %d", resp.StatusCode)
+	}
+}
+
+func TestResponsesAssistantOutputText(t *testing.T) {
+	var receivedBody map[string]any
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/inference/v1/responses" {
+			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintf(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello back\"}\n\n")
+			fmt.Fprintf(w, "data: [DONE]\n\n")
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+
+	client := opencode.NewClient(upstream.URL, nil)
+
+	ctx := context.Background()
+	bodyMap := map[string]any{
+		"model": "muse-spark-1.2-contributor-free",
+		"messages": []map[string]any{
+			{"role": "user", "content": "Hello"},
+			{"role": "assistant", "content": "Hi there!"},
+			{"role": "user", "content": "How are you?"},
+		},
+	}
+
+	resp, err := client.ExecuteChat(ctx, bodyMap, "test", "")
+	if err != nil {
+		t.Fatalf("ExecuteChat: %v", err)
+	}
+	resp.Body.Close()
+
+	inputList, ok := receivedBody["input"].([]any)
+	if !ok || len(inputList) != 3 {
+		t.Fatalf("expected 3 input items in Responses API body, got %v", receivedBody["input"])
+	}
+
+	// Verify user message has type: input_text
+	userMsg1 := inputList[0].(map[string]any)
+	userContent1 := userMsg1["content"].([]any)[0].(map[string]any)
+	if userContent1["type"] != "input_text" {
+		t.Errorf("expected input_text for user, got %v", userContent1["type"])
+	}
+
+	// Verify assistant message has type: output_text (NOT input_text!)
+	asstMsg := inputList[1].(map[string]any)
+	asstContent := asstMsg["content"].([]any)[0].(map[string]any)
+	if asstContent["type"] != "output_text" {
+		t.Errorf("expected output_text for assistant, got %v", asstContent["type"])
+	}
+
+	// Verify second user message has type: input_text
+	userMsg2 := inputList[2].(map[string]any)
+	userContent2 := userMsg2["content"].([]any)[0].(map[string]any)
+	if userContent2["type"] != "input_text" {
+		t.Errorf("expected input_text for second user msg, got %v", userContent2["type"])
+	}
+}
+
+func TestResponsesStreamTranslation(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "event: response.created\ndata: {\"type\":\"response.created\"}\n\n")
+		fmt.Fprintf(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi there! I'm\"}\n\n")
+		fmt.Fprintf(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\" Muse Spark\"}\n\n")
+		fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
+	}))
+	defer upstream.Close()
+
+	client := opencode.NewClient(upstream.URL, nil)
+	router := handler.NewRouter(nil, nil, client)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	reqBody := `{"model":"muse-spark-1.3-contributor-free","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req, _ := http.NewRequest("POST", server.URL+"/api/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST /api/chat/completions: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	var chunks []string
+	var fullText strings.Builder
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				chunks = append(chunks, "[DONE]")
+				break
+			}
+			var obj struct {
+				Object  string `json:"object"`
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+					FinishReason string `json:"finish_reason"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal([]byte(data), &obj); err == nil {
+				if obj.Object == "chat.completion.chunk" && len(obj.Choices) > 0 {
+					fullText.WriteString(obj.Choices[0].Delta.Content)
+					chunks = append(chunks, obj.Choices[0].Delta.Content)
+				}
+			}
+		}
+	}
+
+	if fullText.String() != "Hi there! I'm Muse Spark" {
+		t.Errorf("expected translated text \"Hi there! I'm Muse Spark\", got %q", fullText.String())
+	}
+	if len(chunks) == 0 || chunks[len(chunks)-1] != "[DONE]" {
+		t.Errorf("expected [DONE] at the end, chunks=%v", chunks)
 	}
 }

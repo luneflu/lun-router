@@ -10,6 +10,7 @@
 	import { ProviderState } from '$lib/state/provider.svelte';
 	import { pingModel } from '$lib/api/providers';
 	import { toast } from '$lib/state/toast.svelte';
+	import ModelTestChat from './model-test-chat.svelte';
 
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -17,6 +18,7 @@
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import FlaskConicalIcon from '@lucide/svelte/icons/flask-conical';
+	import MessageSquareIcon from '@lucide/svelte/icons/message-square';
 
 	interface Props {
 		providerState: ProviderState;
@@ -24,6 +26,7 @@
 
 	let { providerState }: Props = $props();
 
+	let selectedChatModel = $state('big-pickle');
 	let isTestingAll = $state(false);
 	let testProgress = $state({ current: 0, total: 0 });
 	let testingModelId = $state<string | null>(null);
@@ -72,6 +75,11 @@
 		} finally {
 			bulkToggling = false;
 		}
+	}
+
+	function handleSelectChatModel(modelId: string) {
+		selectedChatModel = modelId;
+		window.scrollTo({ top: 0, behavior: 'smooth' });
 	}
 
 	// Ping model with empty prompt like 9router
@@ -207,6 +215,9 @@
 			</div>
 		</Card.Header>
 	</Card.Root>
+
+	<!-- Temporary Model Testing Chat -->
+	<ModelTestChat models={providerState.models} bind:selectedModelId={selectedChatModel} />
 
 	<!-- Models Management Card -->
 	<Card.Root class="overflow-hidden p-0">
@@ -386,22 +397,34 @@
 								</Table.Cell>
 
 								<Table.Cell class="text-end">
-									<Button
-										variant="ghost"
-										size="sm"
-										class="h-7 px-2 text-xs text-primary hover:bg-primary/10"
-										disabled={testingModelId === m.id || isTestingAll}
-										onclick={() => handleTestModel(m.id)}
-										title={`Send empty prompt ping to ${m.id}`}
-									>
-										{#if testingModelId === m.id}
-											<RefreshCwIcon data-icon="inline-start" class="size-3 animate-spin" />
-											Testing
-										{:else}
-											<PlayIcon data-icon="inline-start" class="size-3" />
-											Test
-										{/if}
-									</Button>
+									<div class="flex items-center justify-end gap-1.5">
+										<Button
+											variant="ghost"
+											size="sm"
+											class="h-7 px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+											onclick={() => handleSelectChatModel(m.id)}
+											title={`Select ${m.id} in temporary chat above`}
+										>
+											<MessageSquareIcon data-icon="inline-start" class="size-3" />
+											Chat
+										</Button>
+										<Button
+											variant="ghost"
+											size="sm"
+											class="h-7 px-2 text-xs text-primary hover:bg-primary/10"
+											disabled={testingModelId === m.id || isTestingAll}
+											onclick={() => handleTestModel(m.id)}
+											title={`Send empty prompt ping to ${m.id}`}
+										>
+											{#if testingModelId === m.id}
+												<RefreshCwIcon data-icon="inline-start" class="size-3 animate-spin" />
+												Testing
+											{:else}
+												<PlayIcon data-icon="inline-start" class="size-3" />
+												Ping
+											{/if}
+										</Button>
+									</div>
 								</Table.Cell>
 							</Table.Row>
 						{/each}

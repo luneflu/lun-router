@@ -2,20 +2,26 @@ import type { ChatCompletionRequest } from '$lib/types';
 
 export interface CompletionCallbacks {
 	onDelta?: (delta: string) => void;
+	signal?: AbortSignal;
 }
 
 export async function sendChatCompletion(
 	req: ChatCompletionRequest,
-	apiKey: string,
+	apiKey?: string,
 	callbacks?: CompletionCallbacks
 ): Promise<string> {
-	const res = await fetch('/v1/chat/completions', {
+	const headers: Record<string, string> = {
+		'Content-Type': 'application/json'
+	};
+	if (apiKey) {
+		headers['Authorization'] = `Bearer ${apiKey}`;
+	}
+
+	const res = await fetch('/api/chat/completions', {
 		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			Authorization: `Bearer ${apiKey}`
-		},
-		body: JSON.stringify(req)
+		headers,
+		body: JSON.stringify(req),
+		signal: callbacks?.signal
 	});
 
 	if (!res.ok) {
@@ -45,7 +51,19 @@ export async function sendChatCompletion(
 				if (dataStr === '[DONE]') break;
 				try {
 					const parsed = JSON.parse(dataStr);
-					const delta = parsed.choices?.[0]?.delta?.content || '';
+					let delta = '';
+					if (typeof parsed.choices?.[0]?.delta?.content === 'string') {
+						delta = parsed.choices[0].delta.content;
+					} else if (typeof parsed.delta === 'string') {
+						delta = parsed.delta;
+					} else if (typeof parsed.delta?.text === 'string') {
+						delta = parsed.delta.text;
+					} else if (typeof parsed.text === 'string') {
+						delta = parsed.text;
+					} else if (typeof parsed.part?.text === 'string') {
+						delta = parsed.part.text;
+					}
+
 					if (delta) {
 						fullText += delta;
 						callbacks?.onDelta?.(delta);
@@ -59,5 +77,9 @@ export async function sendChatCompletion(
 	}
 
 	const data = await res.json();
-	return data.choices?.[0]?.message?.content || '';
+	let content = data.choices?.[0]?.message?.content;
+	if (typeof content !== 'string') {
+		content = data.output?.[0]?.content?.[0]?.text || data.text || '';
+	}
+	return content;
 }
