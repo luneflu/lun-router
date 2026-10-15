@@ -1,6 +1,7 @@
 <script lang="ts">
 	import * as Card from '$lib/components/ui/card';
 	import * as Alert from '$lib/components/ui/alert';
+	import * as Select from '$lib/components/ui/select';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Badge } from '$lib/components/ui/badge';
@@ -152,41 +153,56 @@
 		<div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
 			<!-- Model Selection -->
 			<div class="flex flex-col gap-1.5">
-				<label for="test-model" class="text-xs font-medium text-muted-foreground">Model</label>
-				<select
-					id="test-model"
-					bind:value={model}
-					class="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
-				>
-					{#each modelOptions as m (m.id)}
-						<option value={m.id} disabled={!m.enabled}>
-							{m.id}
-							{m.enabled ? '' : ' (Disabled)'}
-						</option>
-					{/each}
-				</select>
+				<span class="text-xs font-medium text-muted-foreground">Model</span>
+				<Select.Root type="single" bind:value={model}>
+					<Select.Trigger class="h-9 w-full font-mono text-xs">
+						<Select.Value placeholder="Select model" />
+					</Select.Trigger>
+					<Select.Content class="max-h-72">
+						<Select.Group>
+							{#each modelOptions as m (m.id)}
+								<Select.Item value={m.id} disabled={!m.enabled} label={m.id}>
+									<span class="font-mono text-xs">{m.id}</span>
+									{#if !m.enabled}
+										<span class="text-[10px] text-muted-foreground">(Disabled)</span>
+									{/if}
+								</Select.Item>
+							{/each}
+						</Select.Group>
+					</Select.Content>
+				</Select.Root>
 			</div>
 
 			<!-- Key Selection -->
 			<div class="flex flex-col gap-1.5">
-				<label for="test-key" class="text-xs font-medium text-muted-foreground"
-					>Authorized API Key</label
-				>
-				<select
-					id="test-key"
-					bind:value={selectedKeyId}
-					class="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
-				>
-					{#if keys.length === 0}
-						<option value="">No keys created yet</option>
-					{:else}
-						{#each keys as k (k.id)}
-							<option value={k.id}
-								>{k.name} ({maskKey(k.key)}) {k.isActive ? '' : '[disabled]'}</option
-							>
-						{/each}
-					{/if}
-				</select>
+				<span class="text-xs font-medium text-muted-foreground">Authorized API Key</span>
+				<Select.Root type="single" bind:value={selectedKeyId}>
+					<Select.Trigger class="h-9 w-full text-xs">
+						<Select.Value placeholder="Select API key" />
+					</Select.Trigger>
+					<Select.Content class="max-h-72">
+						<Select.Group>
+							{#if keys.length === 0}
+								<Select.Item value="" disabled label="No keys created yet">
+									No keys created yet
+								</Select.Item>
+							{:else}
+								{#each keys as k (k.id)}
+									<Select.Item
+										value={k.id}
+										disabled={!k.isActive}
+										label={`${k.name} (${maskKey(k.key)})`}
+									>
+										<span>{k.name} ({maskKey(k.key)})</span>
+										{#if !k.isActive}
+											<span class="text-[10px] text-muted-foreground">[disabled]</span>
+										{/if}
+									</Select.Item>
+								{/each}
+							{/if}
+						</Select.Group>
+					</Select.Content>
+				</Select.Root>
 			</div>
 
 			<!-- Streaming Toggle -->

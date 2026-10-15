@@ -1,6 +1,7 @@
 <script lang="ts">
 	import * as Card from '$lib/components/ui/card';
 	import * as Alert from '$lib/components/ui/alert';
+	import * as Select from '$lib/components/ui/select';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
 	import { cn } from '$lib/utils';
@@ -76,10 +77,9 @@
 		}
 	});
 
-	function handleModelChange(e: Event) {
-		const target = e.target as HTMLSelectElement;
-		selectedModelId = target.value;
-		onSelectModel?.(target.value);
+	function handleModelChange(val: string) {
+		selectedModelId = val;
+		onSelectModel?.(val);
 	}
 
 	function scrollToBottom() {
@@ -241,18 +241,29 @@
 				<!-- Model selector dropdown -->
 				<div class="flex items-center gap-1.5">
 					<span class="hidden text-xs text-muted-foreground sm:inline">Model:</span>
-					<select
+					<Select.Root
+						type="single"
 						value={selectedModelId}
-						onchange={handleModelChange}
-						class="h-8 max-w-[200px] rounded-md border border-input bg-background px-2.5 py-1 font-mono text-xs shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none sm:max-w-xs"
+						onValueChange={(v) => {
+							if (v) handleModelChange(v);
+						}}
 					>
-						{#each modelList as m (m.id)}
-							<option value={m.id} disabled={!m.enabled}>
-								{m.id}
-								{m.enabled ? '' : ' [Disabled]'}
-							</option>
-						{/each}
-					</select>
+						<Select.Trigger class="h-8 max-w-[200px] font-mono text-xs sm:max-w-xs">
+							<Select.Value placeholder="Select model" />
+						</Select.Trigger>
+						<Select.Content class="max-h-72">
+							<Select.Group>
+								{#each modelList as m (m.id)}
+									<Select.Item value={m.id} disabled={!m.enabled} label={m.id}>
+										<span class="font-mono text-xs">{m.id}</span>
+										{#if !m.enabled}
+											<span class="text-[10px] text-muted-foreground">[Disabled]</span>
+										{/if}
+									</Select.Item>
+								{/each}
+							</Select.Group>
+						</Select.Content>
+					</Select.Root>
 				</div>
 
 				<!-- Thinking level selector dropdown -->
@@ -261,16 +272,22 @@
 						<span class="hidden text-xs text-amber-600 sm:inline dark:text-amber-400"
 							>Thinking:</span
 						>
-						<select
-							bind:value={selectedThinkingLevel}
-							class="h-8 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 font-mono text-xs text-amber-700 shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none dark:text-amber-300"
-							title="Thinking level / reasoning effort"
-						>
-							<option value="auto">auto</option>
-							{#each thinkingLevels as lvl (lvl)}
-								<option value={lvl}>{lvl}</option>
-							{/each}
-						</select>
+						<Select.Root type="single" bind:value={selectedThinkingLevel}>
+							<Select.Trigger
+								class="h-8 w-28 border-amber-500/30 bg-amber-500/10 font-mono text-xs text-amber-700 dark:text-amber-300"
+								title="Thinking level / reasoning effort"
+							>
+								<Select.Value placeholder="auto" />
+							</Select.Trigger>
+							<Select.Content>
+								<Select.Group>
+									<Select.Item value="auto" label="auto">auto</Select.Item>
+									{#each thinkingLevels as lvl (lvl)}
+										<Select.Item value={lvl} label={lvl}>{lvl}</Select.Item>
+									{/each}
+								</Select.Group>
+							</Select.Content>
+						</Select.Root>
 					</div>
 				{/if}
 

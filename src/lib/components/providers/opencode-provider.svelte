@@ -1,6 +1,7 @@
 <script lang="ts">
 	import * as Card from '$lib/components/ui/card';
 	import * as Table from '$lib/components/ui/table';
+	import * as Select from '$lib/components/ui/select';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Badge } from '$lib/components/ui/badge';
@@ -298,17 +299,29 @@
 
 				<!-- Batch concurrency & Test All button -->
 				<div class="flex items-center gap-1.5">
-					<select
-						bind:value={testConcurrency}
+					<Select.Root
+						type="single"
+						value={String(testConcurrency)}
+						onValueChange={(v) => {
+							if (v) testConcurrency = Number(v);
+						}}
 						disabled={isTestingAll}
-						class="h-8 rounded-md border border-input bg-background px-2 py-1 text-xs shadow-xs focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
-						title="Batch test concurrency (parallel pings)"
 					>
-						<option value={1}>1x (Serial)</option>
-						<option value={2}>2x</option>
-						<option value={4}>4x (Batch)</option>
-						<option value={8}>8x (Turbo)</option>
-					</select>
+						<Select.Trigger
+							class="h-8 w-28 text-xs"
+							title="Batch test concurrency (parallel pings)"
+						>
+							<Select.Value placeholder="Concurrency" />
+						</Select.Trigger>
+						<Select.Content>
+							<Select.Group>
+								<Select.Item value="1" label="1x (Serial)">1x (Serial)</Select.Item>
+								<Select.Item value="2" label="2x">2x</Select.Item>
+								<Select.Item value="4" label="4x (Batch)">4x (Batch)</Select.Item>
+								<Select.Item value="8" label="8x (Turbo)">8x (Turbo)</Select.Item>
+							</Select.Group>
+						</Select.Content>
+					</Select.Root>
 
 					{#if isTestingAll}
 						<div class="flex items-center gap-1.5">

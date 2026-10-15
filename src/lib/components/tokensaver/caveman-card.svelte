@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import * as Card from '$lib/components/ui/card';
+	import * as Select from '$lib/components/ui/select';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Switch } from '$lib/components/ui/switch';
@@ -561,25 +562,36 @@
 					</div>
 
 					<!-- Model Select Menu -->
-					<select
-						bind:value={selectedModel}
-						class="h-8 rounded-md border border-border bg-background px-2.5 font-mono text-xs focus:ring-1 focus:ring-ring focus:outline-none"
-					>
-						{#if enabledModels.length > 0}
-							<optgroup label="Enabled Models">
-								{#each enabledModels as m (m.id)}
-									<option value={m.id}>{m.id}</option>
-								{/each}
-							</optgroup>
-						{/if}
-						{#if disabledModels.length > 0}
-							<optgroup label="Disabled Models">
-								{#each disabledModels as m (m.id)}
-									<option value={m.id} disabled>{m.id} (disabled)</option>
-								{/each}
-							</optgroup>
-						{/if}
-					</select>
+					<Select.Root type="single" bind:value={selectedModel}>
+						<Select.Trigger class="h-8 min-w-[200px] font-mono text-xs">
+							<Select.Value placeholder="Select model" />
+						</Select.Trigger>
+						<Select.Content class="max-h-72">
+							{#if enabledModels.length > 0}
+								<Select.Group>
+									<Select.GroupHeading>Enabled Models</Select.GroupHeading>
+									{#each enabledModels as m (m.id)}
+										<Select.Item value={m.id} label={m.id}>
+											<span class="font-mono text-xs">{m.id}</span>
+										</Select.Item>
+									{/each}
+								</Select.Group>
+							{/if}
+							{#if enabledModels.length > 0 && disabledModels.length > 0}
+								<Select.Separator />
+							{/if}
+							{#if disabledModels.length > 0}
+								<Select.Group>
+									<Select.GroupHeading>Disabled Models</Select.GroupHeading>
+									{#each disabledModels as m (m.id)}
+										<Select.Item value={m.id} disabled label={m.id}>
+											<span class="font-mono text-xs text-muted-foreground">{m.id} (disabled)</span>
+										</Select.Item>
+									{/each}
+								</Select.Group>
+							{/if}
+						</Select.Content>
+					</Select.Root>
 				</div>
 			</div>
 		</Card.Header>
