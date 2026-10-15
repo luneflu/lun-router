@@ -96,6 +96,32 @@ type Client struct {
 	modelsFile string
 }
 
+// defaultCallbackURL is the redirect URI used when the caller names none. It must
+// stay on loopback: the Antigravity client ID belongs to Antigravity itself, and
+// Google only has a loopback URI registered for it, so any public host is
+// rejected with redirect_uri_mismatch. Callers behind a proxy paste the code back
+// instead (see AntigravityHandler.CreateAccount).
+const defaultCallbackURL = "http://localhost:20128/callback"
+
+// AuthRedirectURI resolves the redirect URI for an authorize URL: the caller's
+// hint when it names one, otherwise the loopback default.
+func (c *Client) AuthRedirectURI(hint string) string {
+	if hint != "" {
+		return hint
+	}
+	return defaultCallbackURL
+}
+
+// ExchangeRedirectURI resolves the redirect URI for a token exchange. An explicit
+// value (the callback URL the browser actually hit) wins so it always matches the
+// authorize request; then the loopback default.
+func (c *Client) ExchangeRedirectURI(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return c.AuthRedirectURI("")
+}
+
 func NewClient(store *AccountStore, dataDirs ...string) *Client {
 	dataDir := "data"
 	if len(dataDirs) > 0 && dataDirs[0] != "" {
@@ -432,9 +458,7 @@ func (c *Client) GetActiveForModel(model string) (*Account, bool) {
 }
 
 func (c *Client) BuildAuthURL(redirectURI, state string) string {
-	if redirectURI == "" {
-		redirectURI = "http://localhost:20128/callback"
-	}
+	redirectURI = c.AuthRedirectURI(redirectURI)
 	if state == "" {
 		state = generateAccountID()
 	}
@@ -452,9 +476,7 @@ func (c *Client) BuildAuthURL(redirectURI, state string) string {
 }
 
 func (c *Client) ExchangeCode(ctx context.Context, code, redirectURI string) (*Account, error) {
-	if redirectURI == "" {
-		redirectURI = "http://localhost:20128/callback"
-	}
+	redirectURI = c.ExchangeRedirectURI(redirectURI)
 
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")

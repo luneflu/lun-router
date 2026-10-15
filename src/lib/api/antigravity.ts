@@ -108,7 +108,7 @@ export async function refreshAntigravityAccount(
 
 export async function getAntigravityOAuthUrl(
 	redirectUri?: string
-): Promise<{ authUrl: string; clientId: string }> {
+): Promise<{ authUrl: string; clientId: string; redirectUri?: string }> {
 	try {
 		const q = redirectUri ? `?redirect_uri=${encodeURIComponent(redirectUri)}` : '';
 		const res = await fetch(`/api/providers/antigravity/oauth/auth-url${q}`);

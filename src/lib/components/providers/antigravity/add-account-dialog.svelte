@@ -38,6 +38,10 @@
 
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
+	// Resolved by the backend and always on loopback: Google only has a loopback
+	// URI registered for this client ID, so a public domain is rejected. The
+	// exchange reuses whichever URI the authorize request used.
+	let oauthRedirectUri = $state<string | null>(null);
 
 	$effect(() => {
 		if (open && tab === 'oauth') {
@@ -52,7 +56,9 @@
 			try {
 				submitting = true;
 				error = null;
-				const redirectUri = url ? `${new URL(url).origin}/callback` : undefined;
+				const redirectUri = url
+					? `${new URL(url).origin}/callback`
+					: (oauthRedirectUri ?? undefined);
 				await onAdd({ code, redirectUri });
 				open = false;
 			} catch (e: unknown) {
@@ -92,6 +98,7 @@
 		try {
 			authUrlLoading = true;
 			const res = await getAntigravityOAuthUrl();
+			oauthRedirectUri = res.redirectUri ?? null;
 			if (res.authUrl) {
 				authUrl = res.authUrl;
 			}
@@ -126,7 +133,7 @@
 					error = 'Please paste the authorization code or full callback URL';
 					return;
 				}
-				await onAdd({ code: trimmed });
+				await onAdd({ code: trimmed, redirectUri: oauthRedirectUri ?? undefined });
 			} else {
 				const raw = tokenOrJson.trim();
 				if (!raw) {
@@ -281,7 +288,8 @@
 					<div class="mt-1 flex flex-col gap-1 border-t border-border pt-2.5">
 						<span class="font-medium text-foreground">2. Paste Code or Callback URL</span>
 						<p class="text-[11px] text-muted-foreground">
-							After authorizing, paste the callback URL or the code parameter here:
+							After authorizing, copy the whole URL from the address bar and paste it here. The
+							localhost page will fail to load on a remote server — that is expected:
 						</p>
 						<Input
 							type="text"

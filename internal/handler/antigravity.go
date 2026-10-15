@@ -207,7 +207,10 @@ func (h *AntigravityHandler) RefreshAccount(w http.ResponseWriter, r *http.Reque
 
 // GET /api/providers/antigravity/oauth/auth-url
 func (h *AntigravityHandler) GetOAuthURL(w http.ResponseWriter, r *http.Request) {
-	redirectURI := r.URL.Query().Get("redirect_uri")
+	// The redirect URI stays on loopback: this client ID is Antigravity's own and
+	// Google rejects any host that is not registered for it, such as a
+	// reverse-proxied domain. The caller's value still wins when it names one.
+	redirectURI := h.client.AuthRedirectURI(r.URL.Query().Get("redirect_uri"))
 	state := r.URL.Query().Get("state")
 	authURL := h.client.BuildAuthURL(redirectURI, state)
 
