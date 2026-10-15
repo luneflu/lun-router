@@ -189,3 +189,9 @@ export interface PonytailTestResult {
 	messages: Array<{ role: string; content: string }>;
 	timestamp: string;
 }
+
+export interface AuthStatus {
+	auth_enabled: boolean;
+	setup_required: boolean;
+	authenticated: boolean;
+}

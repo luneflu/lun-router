@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button';
 	import { cn } from '$lib/utils';
+	import { authState } from '$lib/state/auth.svelte';
 	import SunIcon from '@lucide/svelte/icons/sun';
 	import MoonIcon from '@lucide/svelte/icons/moon';
 	import MenuIcon from '@lucide/svelte/icons/menu';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import LockIcon from '@lucide/svelte/icons/lock';
 
 	interface Props {
 		error: string | null;
@@ -81,6 +83,18 @@
 					{error ? 'offline' : 'Go :20128'}
 				</span>
 			</div>
+
+			{#if authState.authEnabled && authState.authenticated}
+				<Button
+					variant="ghost"
+					size="icon-sm"
+					onclick={() => authState.logout()}
+					aria-label="Lock dashboard"
+					title="Lock dashboard (logout)"
+				>
+					<LockIcon class="size-4 text-muted-foreground hover:text-foreground" />
+				</Button>
+			{/if}
 
 			<Button
 				variant="ghost"

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"lun-router/internal/antigravity"
+	"lun-router/internal/auth"
 	"lun-router/internal/caveman"
 	"lun-router/internal/handler"
 	"lun-router/internal/opencode"
@@ -64,6 +65,11 @@ func main() {
 		log.Fatalf("Failed to initialize Ponytail Service: %v", err)
 	}
 
+	authSvc, err := auth.NewService(dataDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize Auth Service: %v", err)
+	}
+
 	vm := opencode.NewVersionManager(dataDir, 2*time.Hour)
 	vm.StartBackgroundSync(context.Background())
 
@@ -77,7 +83,7 @@ func main() {
 		log.Fatalf("Failed to load embedded frontend: %v", err)
 	}
 
-	router := handler.NewRouter(ks, ms, client, agClient, rtkSvc, cavemanSvc, ponytailSvc, distFS)
+	router := handler.NewRouter(ks, ms, client, agClient, rtkSvc, cavemanSvc, ponytailSvc, authSvc, distFS)
 
 	log.Printf("Lun Router Go backend running on :%s (opencode version: %s, data dir: %s)", port, vm.GetVersion(), dataDir)
 	if err := http.ListenAndServe(":"+port, router); err != nil {

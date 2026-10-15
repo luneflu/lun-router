@@ -3,6 +3,8 @@
 	import favicon from '#lib/assets/favicon.svg';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
+	import { authState } from '$lib/state/auth.svelte';
+	import AuthGate from '$lib/components/auth/auth-gate.svelte';
 	import { keysState } from '$lib/state/keys.svelte';
 	import { providerState } from '$lib/state/provider.svelte';
 	import { antigravityState } from '$lib/state/antigravity.svelte';
@@ -31,12 +33,19 @@
 					: 'home'
 	);
 
-	onMount(() => {
+	function loadData() {
 		keysState.load();
 		providerState.load();
 		antigravityState.load();
 		rtkState.load();
 		ponytailState.load();
+	}
+
+	onMount(async () => {
+		await authState.checkStatus();
+		if (!authState.authEnabled || authState.authenticated) {
+			loadData();
+		}
 	});
 </script>
 
@@ -44,53 +53,64 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
-<div class="min-h-screen bg-background text-foreground">
-	<!-- Left Navigation Sidebar -->
-	<Sidebar
-		{activeView}
-		totalKeys={keysState.totalCount}
-		enabledModels={providerState.enabledCount}
-		totalModels={providerState.totalCount}
-		antigravityAccounts={antigravityState.activeAccountsCount}
-		antigravityEnabledModels={antigravityState.enabledCount}
-		antigravityTotalModels={antigravityState.totalCount}
-		mobileOpen={mobileMenuOpen}
-		onCloseMobile={() => (mobileMenuOpen = false)}
-	/>
-
-	<!-- Main Content Area -->
-	<div class="flex min-h-screen min-w-0 flex-1 flex-col md:ps-64">
-		<Navbar
-			error={keysState.error || providerState.error}
+{#if authState.loading}
+	<div class="flex min-h-screen items-center justify-center bg-background">
+		<div
+			class="size-6 animate-spin rounded-full border-2 border-primary border-t-transparent"
+		></div>
+	</div>
+{:else if authState.setupRequired || (authState.authEnabled && !authState.authenticated)}
+	<AuthGate onSuccess={loadData} />
+{:else}
+	<div class="min-h-screen bg-background text-foreground">
+		<!-- Left Navigation Sidebar -->
+		<Sidebar
 			{activeView}
-			onToggleMobileMenu={() => (mobileMenuOpen = !mobileMenuOpen)}
+			totalKeys={keysState.totalCount}
+			enabledModels={providerState.enabledCount}
+			totalModels={providerState.totalCount}
+			antigravityAccounts={antigravityState.activeAccountsCount}
+			antigravityEnabledModels={antigravityState.enabledCount}
+			antigravityTotalModels={antigravityState.totalCount}
+			mobileOpen={mobileMenuOpen}
+			onCloseMobile={() => (mobileMenuOpen = false)}
 		/>
 
-		<main class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-6 sm:px-8">
-			{#if keysState.error}
-				<Alert.Root variant="destructive">
-					<AlertCircleIcon class="size-4" />
-					<Alert.Title>Go Backend Unreachable</Alert.Title>
-					<Alert.Description class="flex items-center justify-between gap-4">
-						<span>{keysState.error}. Please run <code>go run .</code> from the project root.</span>
-						<Button
-							variant="outline"
-							size="sm"
-							onclick={() => {
-								keysState.load();
-								providerState.load();
-							}}
-						>
-							<RefreshCwIcon data-icon="inline-start" />
-							Retry
-						</Button>
-					</Alert.Description>
-				</Alert.Root>
-			{/if}
+		<!-- Main Content Area -->
+		<div class="flex min-h-screen min-w-0 flex-1 flex-col md:ps-64">
+			<Navbar
+				error={keysState.error || providerState.error}
+				{activeView}
+				onToggleMobileMenu={() => (mobileMenuOpen = !mobileMenuOpen)}
+			/>
 
-			{@render children()}
-		</main>
+			<main class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-4 py-6 sm:px-8">
+				{#if keysState.error}
+					<Alert.Root variant="destructive">
+						<AlertCircleIcon class="size-4" />
+						<Alert.Title>Go Backend Unreachable</Alert.Title>
+						<Alert.Description class="flex items-center justify-between gap-4">
+							<span>{keysState.error}. Please run <code>go run .</code> from the project root.</span
+							>
+							<Button
+								variant="outline"
+								size="sm"
+								onclick={() => {
+									keysState.load();
+									providerState.load();
+								}}
+							>
+								<RefreshCwIcon data-icon="inline-start" />
+								Retry
+							</Button>
+						</Alert.Description>
+					</Alert.Root>
+				{/if}
+
+				{@render children()}
+			</main>
+		</div>
 	</div>
-</div>
+{/if}
 
 <Toaster />

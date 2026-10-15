@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"encoding/json"
 	"io"
 	"io/fs"
 	"net/http"
 	"strings"
 
 	"lun-router/internal/antigravity"
+	"lun-router/internal/auth"
 	"lun-router/internal/caveman"
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
@@ -14,7 +16,7 @@ import (
 	"lun-router/internal/store"
 )
 
-func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, staticFS ...fs.FS) http.Handler {
+func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, staticFS ...fs.FS) http.Handler {
 	mux := http.NewServeMux()
 
 	keyH := NewKeyHandler(ks)
@@ -22,6 +24,16 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	rtkH := NewRTKHandler(rtkSvc)
 	caveH := NewCavemanHandler(cavemanSvc)
 	ponyH := NewPonytailHandler(ponytailSvc)
+
+	// Auth Management
+	if authSvc != nil {
+		authH := NewAuthHandler(authSvc)
+		mux.HandleFunc("GET /api/auth/status", authH.Status)
+		mux.HandleFunc("POST /api/auth/setup", authH.Setup)
+		mux.HandleFunc("POST /api/auth/login", authH.Login)
+		mux.HandleFunc("POST /api/auth/logout", authH.Logout)
+		mux.HandleFunc("POST /api/auth/change-password", authH.ChangePassword)
+	}
 
 	// API Keys Management
 	mux.HandleFunc("GET /api/health", keyH.Health)
@@ -86,7 +98,55 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 		mux.Handle("/", spaHandler(staticFS[0]))
 	}
 
-	return corsMiddleware(mux)
+	return corsMiddleware(authMiddleware(authSvc, mux))
+}
+
+func authMiddleware(authSvc *auth.Service, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if authSvc == nil || !authSvc.IsAuthEnabled() {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		path := r.URL.Path
+
+		// Public endpoints that never require session authentication
+		if strings.HasPrefix(path, "/api/auth/") ||
+			path == "/api/health" ||
+			path == "/callback" ||
+			strings.HasPrefix(path, "/v1/") ||
+			!strings.HasPrefix(path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// API key authenticated inference on /api/chat/completions
+		if path == "/api/chat/completions" {
+			authHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+				if strings.HasPrefix(token, "lun-") {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+		}
+
+		token := ExtractSessionToken(r)
+		if token == "" || !authSvc.ValidateSession(token) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": "Authentication required. Please log in.",
+					"type":    "authentication_error",
+				},
+			})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func spaHandler(distFS fs.FS) http.Handler {

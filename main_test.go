@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"lun-router/internal/antigravity"
+	"lun-router/internal/auth"
 	"lun-router/internal/caveman"
 	"lun-router/internal/handler"
 	"lun-router/internal/model"
@@ -43,7 +44,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 		t.Fatalf("NewModelStore: %v", err)
 	}
 
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -215,7 +216,7 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 
 	ms, _ := store.NewModelStore(tempDir)
 	mockClient := opencode.NewClient(mockUpstream.URL, nil)
-	routerServer := httptest.NewServer(handler.NewRouter(ks, ms, mockClient, nil, nil, nil, nil))
+	routerServer := httptest.NewServer(handler.NewRouter(ks, ms, mockClient, nil, nil, nil, nil, nil))
 	defer routerServer.Close()
 
 	client := routerServer.Client()
@@ -357,7 +358,7 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 	key, _ := ks.Create("Live Test Key", "sk-live-key")
 
 	ms, _ := store.NewModelStore(tempDir)
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, nil))
 	defer server.Close()
 
 	payload := map[string]any{
@@ -458,7 +459,7 @@ func TestOpenCodeModelEnableDisable(t *testing.T) {
 	ms, _ := store.NewModelStore(tempDir)
 	key, _ := ks.Create("Admin Key", "sk-test-admin-key")
 
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -626,7 +627,7 @@ func TestOpenCodeSessionRotationOnRateLimit(t *testing.T) {
 	key, _ := ks.Create("Rate Limit Test Key", "sk-ratelimit-key-1")
 
 	client := opencode.NewClient(mockUpstream.URL, nil)
-	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -722,7 +723,7 @@ func TestOpenCodeModelTestPing(t *testing.T) {
 	ms, _ := store.NewModelStore(tempDir)
 	client := opencode.NewClient(mockUpstream.URL, nil)
 
-	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -822,7 +823,7 @@ func TestOpenCodeVersionManager(t *testing.T) {
 	ks, _ := store.NewKeyStore(tempDir)
 	ms, _ := store.NewModelStore(tempDir)
 	client := opencode.NewClient("", vm2)
-	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -852,7 +853,7 @@ func TestSPAStaticServing(t *testing.T) {
 		},
 	}
 
-	router := handler.NewRouter(nil, nil, nil, nil, nil, nil, nil, mockFS)
+	router := handler.NewRouter(nil, nil, nil, nil, nil, nil, nil, nil, mockFS)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -992,7 +993,7 @@ func TestResponsesStreamTranslation(t *testing.T) {
 	defer upstream.Close()
 
 	client := opencode.NewClient(upstream.URL, nil)
-	router := handler.NewRouter(nil, nil, client, nil, nil, nil, nil)
+	router := handler.NewRouter(nil, nil, client, nil, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1060,7 +1061,7 @@ func TestResponsesStreamTranslation(t *testing.T) {
 	agStore, _ := antigravity.NewAccountStore(tempDir)
 	agClient := antigravity.NewClient(agStore)
 
-	router := handler.NewRouter(ks, ms, nil, agClient, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, nil, agClient, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1207,7 +1208,7 @@ func TestAntigravityQuotaTracker(t *testing.T) {
 	agStore, _ := antigravity.NewAccountStore(tempDir)
 	agClient := antigravity.NewClient(agStore)
 
-	router := handler.NewRouter(ks, ms, nil, agClient, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, nil, agClient, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1280,7 +1281,7 @@ func TestRTKWorkflow(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 
-	router := handler.NewRouter(ks, ms, nil, nil, rtkSvc, nil, nil)
+	router := handler.NewRouter(ks, ms, nil, nil, rtkSvc, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1392,7 +1393,7 @@ func TestCavemanWorkflow(t *testing.T) {
 	}
 	defer cavemanSvc.Close()
 
-	router := handler.NewRouter(ks, ms, nil, nil, nil, cavemanSvc, nil)
+	router := handler.NewRouter(ks, ms, nil, nil, nil, cavemanSvc, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1480,7 +1481,7 @@ func TestPonytailWorkflow(t *testing.T) {
 	}
 	defer ponytailSvc.Close()
 
-	router := handler.NewRouter(ks, ms, nil, nil, nil, nil, ponytailSvc)
+	router := handler.NewRouter(ks, ms, nil, nil, nil, nil, ponytailSvc, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1583,7 +1584,7 @@ func TestDynamicModelSync(t *testing.T) {
 	mm := opencode.NewModelManager(tempDir, ocClient, time.Hour)
 	ocClient.SetModelManager(mm)
 
-	router := handler.NewRouter(ks, ms, ocClient, agClient, nil, nil, nil)
+	router := handler.NewRouter(ks, ms, ocClient, agClient, nil, nil, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1645,4 +1646,172 @@ func TestDynamicModelSync(t *testing.T) {
 	if len(agData.Models) == 0 {
 		t.Errorf("expected non-empty antigravity models list")
 	}
+}
+
+func TestPasswordAuthWorkflow(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-auth-workflow-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	authSvc, err := auth.NewService(tempDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	router := handler.NewRouter(ks, ms, nil, nil, nil, nil, nil, authSvc)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := server.Client()
+
+	// 1. Initial auth status: setup_required = true, auth_enabled = false
+	statusResp, err := client.Get(server.URL + "/api/auth/status")
+	if err != nil {
+		t.Fatalf("GET /api/auth/status: %v", err)
+	}
+	var st handler.AuthStatusResponse
+	_ = json.NewDecoder(statusResp.Body).Decode(&st)
+	statusResp.Body.Close()
+
+	if st.AuthEnabled || !st.SetupRequired {
+		t.Fatalf("expected auth_enabled: false and setup_required: true initially, got %+v", st)
+	}
+
+	// 2. Setup initial password (too short should fail)
+	shortPayload, _ := json.Marshal(map[string]string{"password": "12"})
+	resp, _ := client.Post(server.URL+"/api/auth/setup", "application/json", bytes.NewReader(shortPayload))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on short password, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 3. Setup with valid password
+	setupPayload, _ := json.Marshal(map[string]string{"password": "correct-horse-battery"})
+	resp, err = client.Post(server.URL+"/api/auth/setup", "application/json", bytes.NewReader(setupPayload))
+	if err != nil {
+		t.Fatalf("POST /api/auth/setup: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on setup, got %d", resp.StatusCode)
+	}
+	var setupRes struct {
+		Success bool   `json:"success"`
+		Token   string `json:"token"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&setupRes)
+	resp.Body.Close()
+
+	if !setupRes.Success || len(setupRes.Token) != 64 {
+		t.Fatalf("expected 64-char session token on setup, got %s", setupRes.Token)
+	}
+
+	// Check disk file: verify it is bcrypt hashed, not plaintext
+	authFileContent, err := os.ReadFile(tempDir + "/auth.json")
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	if strings.Contains(string(authFileContent), "correct-horse-battery") {
+		t.Fatal("auth.json contains plaintext password! Must be hashed.")
+	}
+	if !strings.Contains(string(authFileContent), "$2a$") && !strings.Contains(string(authFileContent), "$2b$") {
+		t.Fatal("auth.json does not contain bcrypt hash ($2a$ or $2b$)")
+	}
+
+	// 4. Try setup again: must return 400 already configured
+	resp2, _ := client.Post(server.URL+"/api/auth/setup", "application/json", bytes.NewReader(setupPayload))
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on duplicate setup, got %d", resp2.StatusCode)
+	}
+	resp2.Body.Close()
+
+	// 5. Unauthenticated request to protected endpoint /api/keys returns 401
+	unauthClient := &http.Client{}
+	keysResp, err := unauthClient.Get(server.URL + "/api/keys")
+	if err != nil {
+		t.Fatalf("GET /api/keys: %v", err)
+	}
+	if keysResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for /api/keys without session, got %d", keysResp.StatusCode)
+	}
+	keysResp.Body.Close()
+
+	// 6. Public endpoint /api/health succeeds without auth
+	healthResp, err := unauthClient.Get(server.URL + "/api/health")
+	if err != nil || healthResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for /api/health, got %d", healthResp.StatusCode)
+	}
+	healthResp.Body.Close()
+
+	// 7. Login with wrong password returns 401
+	wrongLogin, _ := json.Marshal(map[string]string{"password": "wrongPassword123"})
+	resp, _ = client.Post(server.URL+"/api/auth/login", "application/json", bytes.NewReader(wrongLogin))
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on wrong password, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 8. Login with correct password returns 200 and session token + cookie
+	validLogin, _ := json.Marshal(map[string]string{"password": "correct-horse-battery"})
+	resp, err = client.Post(server.URL+"/api/auth/login", "application/json", bytes.NewReader(validLogin))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on login, got %d", resp.StatusCode)
+	}
+	var loginRes struct {
+		Success bool   `json:"success"`
+		Token   string `json:"token"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&loginRes)
+
+	// Check Set-Cookie header
+	cookies := resp.Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "lun_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	resp.Body.Close()
+
+	if sessionCookie == nil || sessionCookie.Value != loginRes.Token {
+		t.Fatalf("expected lun_session cookie with token value, got %+v", sessionCookie)
+	}
+
+	// 9. Authenticated request using Cookie header to /api/keys succeeds
+	req, _ := http.NewRequest("GET", server.URL+"/api/keys", nil)
+	req.AddCookie(sessionCookie)
+	keysResp2, err := unauthClient.Do(req)
+	if err != nil || keysResp2.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK with session cookie, got %d", keysResp2.StatusCode)
+	}
+	keysResp2.Body.Close()
+
+	// 10. Authenticated request using Authorization: Bearer <token> succeeds
+	req2, _ := http.NewRequest("GET", server.URL+"/api/keys", nil)
+	req2.Header.Set("Authorization", "Bearer "+loginRes.Token)
+	keysResp3, err := unauthClient.Do(req2)
+	if err != nil || keysResp3.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK with Bearer session token, got %d", keysResp3.StatusCode)
+	}
+	keysResp3.Body.Close()
+
+	// 11. Logout revokes session
+	logoutReq, _ := http.NewRequest("POST", server.URL+"/api/auth/logout", nil)
+	logoutReq.AddCookie(sessionCookie)
+	logoutResp, err := unauthClient.Do(logoutReq)
+	if err != nil || logoutResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK on logout, got %d", logoutResp.StatusCode)
+	}
+	logoutResp.Body.Close()
+
+	// Subsequent request with the logged-out token returns 401
+	keysResp4, err := unauthClient.Do(req)
+	if err != nil || keysResp4.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized after logout, got %d", keysResp4.StatusCode)
+	}
+	keysResp4.Body.Close()
 }
