@@ -6,6 +6,7 @@
 	import { keysState } from '$lib/state/keys.svelte';
 	import { providerState } from '$lib/state/provider.svelte';
 	import { antigravityState } from '$lib/state/antigravity.svelte';
+	import { tokenSaverState } from '$lib/state/tokensaver.svelte';
 	import Sidebar from '$lib/components/sidebar/sidebar.svelte';
 	import Navbar from '$lib/components/navbar/navbar.svelte';
 	import * as Alert from '$lib/components/ui/alert';
@@ -19,18 +20,21 @@
 
 	let mobileMenuOpen = $state(false);
 
-	const activeView = $derived<'home' | 'opencode' | 'antigravity'>(
+	const activeView = $derived<'home' | 'opencode' | 'antigravity' | 'token-saver'>(
 		page.url.pathname.startsWith('/antigravity')
 			? 'antigravity'
 			: page.url.pathname.startsWith('/opencode')
 				? 'opencode'
-				: 'home'
+				: page.url.pathname.startsWith('/token-saver')
+					? 'token-saver'
+					: 'home'
 	);
 
 	onMount(() => {
 		keysState.load();
 		providerState.load();
 		antigravityState.load();
+		tokenSaverState.load();
 	});
 </script>
 

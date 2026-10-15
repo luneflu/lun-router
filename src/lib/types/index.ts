@@ -59,3 +59,34 @@ export interface AntigravityAccountUsage {
 	quotas: Record<string, AntigravityQuotaItem>;
 	fetchedAt: string;
 }
+
+export interface TokenSaverHit {
+	shape: string;
+	filter: string;
+	saved: number;
+}
+
+export interface TokenSaverStats {
+	total_requests: number;
+	compressed_requests: number;
+	bytes_before: number;
+	bytes_after: number;
+	saved_bytes: number;
+	saved_percent: number;
+	recent_hits?: TokenSaverHit[];
+}
+
+export interface TokenSaverStatus {
+	rtk_enabled: boolean;
+	stats: TokenSaverStats;
+	supported_filters: string[];
+}
+
+export interface TokenSaverTestResult {
+	filter: string | null;
+	original_size: number;
+	compressed_size: number;
+	saved_bytes: number;
+	saved_percent: number;
+	output: string;
+}

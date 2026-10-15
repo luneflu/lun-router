@@ -8,7 +8,7 @@
 
 	interface Props {
 		error: string | null;
-		activeView: 'home' | 'opencode' | 'antigravity';
+		activeView: 'home' | 'opencode' | 'antigravity' | 'token-saver';
 		onToggleMobileMenu?: () => void;
 	}
 
@@ -51,6 +51,10 @@
 					<span class="text-muted-foreground">Providers</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
 					<span class="font-semibold text-foreground">Google Antigravity</span>
+				{:else if activeView === 'token-saver'}
+					<span class="text-muted-foreground">Optimization</span>
+					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
+					<span class="font-semibold text-foreground">Token Saver</span>
 				{:else}
 					<span class="text-muted-foreground">Providers</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />

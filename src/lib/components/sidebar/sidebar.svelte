@@ -5,12 +5,13 @@
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import RocketIcon from '@lucide/svelte/icons/rocket';
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
+	import ZapIcon from '@lucide/svelte/icons/zap';
 	import XIcon from '@lucide/svelte/icons/x';
 	import { Button } from '$lib/components/ui/button';
 
 	interface Props {
-		activeView: 'home' | 'opencode' | 'antigravity';
-		onSelectView?: (view: 'home' | 'opencode' | 'antigravity') => void;
+		activeView: 'home' | 'opencode' | 'antigravity' | 'token-saver';
+		onSelectView?: (view: 'home' | 'opencode' | 'antigravity' | 'token-saver') => void;
 		totalKeys: number;
 		enabledModels: number;
 		totalModels: number;
@@ -34,7 +35,7 @@
 		onCloseMobile
 	}: Props = $props();
 
-	function handleNavigate(view: 'home' | 'opencode' | 'antigravity') {
+	function handleNavigate(view: 'home' | 'opencode' | 'antigravity' | 'token-saver') {
 		onSelectView?.(view);
 		onCloseMobile();
 	}
@@ -187,6 +188,35 @@
 						</span>
 					{/if}
 				</div>
+			</a>
+		</div>
+
+		<!-- Token Saver Section -->
+		<div class="flex flex-col gap-1">
+			<span class="px-2.5 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+				Optimization
+			</span>
+
+			<a
+				href="/token-saver"
+				class={cn(
+					'flex items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition-colors',
+					activeView === 'token-saver'
+						? 'bg-amber-500/10 font-semibold text-amber-500'
+						: 'text-muted-foreground hover:bg-muted hover:text-foreground'
+				)}
+				onclick={() => handleNavigate('token-saver')}
+			>
+				<div class="flex items-center gap-2.5">
+					<div class="relative flex items-center justify-center">
+						<ZapIcon class="size-4" />
+					</div>
+					<div class="flex flex-col items-start text-start">
+						<span>Token Saver</span>
+					</div>
+				</div>
+
+				<Badge variant="secondary" class="font-mono text-[9px]">RTK</Badge>
 			</a>
 		</div>
 	</div>

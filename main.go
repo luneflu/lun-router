@@ -12,6 +12,7 @@ import (
 	"lun-router/internal/antigravity"
 	"lun-router/internal/handler"
 	"lun-router/internal/opencode"
+	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
 
@@ -45,6 +46,11 @@ func main() {
 	}
 	agClient := antigravity.NewClient(agStore)
 
+	rtkSvc, err := rtk.NewService(dataDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize RTK Service: %v", err)
+	}
+
 	vm := opencode.NewVersionManager(dataDir, 2*time.Hour)
 	vm.StartBackgroundSync(context.Background())
 
@@ -55,7 +61,7 @@ func main() {
 		log.Fatalf("Failed to load embedded frontend: %v", err)
 	}
 
-	router := handler.NewRouter(ks, ms, client, agClient, distFS)
+	router := handler.NewRouter(ks, ms, client, agClient, rtkSvc, distFS)
 
 	log.Printf("Lun Router Go backend running on :%s (opencode version: %s, data dir: %s)", port, vm.GetVersion(), dataDir)
 	if err := http.ListenAndServe(":"+port, router); err != nil {

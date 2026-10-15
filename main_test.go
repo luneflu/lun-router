@@ -20,6 +20,7 @@ import (
 	"lun-router/internal/handler"
 	"lun-router/internal/model"
 	"lun-router/internal/opencode"
+	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
 
@@ -40,7 +41,7 @@ func TestAPIKeysWorkflow(t *testing.T) {
 		t.Fatalf("NewModelStore: %v", err)
 	}
 
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -212,7 +213,7 @@ func TestOpenCodeCompletionsAndHeaders(t *testing.T) {
 
 	ms, _ := store.NewModelStore(tempDir)
 	mockClient := opencode.NewClient(mockUpstream.URL, nil)
-	routerServer := httptest.NewServer(handler.NewRouter(ks, ms, mockClient, nil))
+	routerServer := httptest.NewServer(handler.NewRouter(ks, ms, mockClient, nil, nil))
 	defer routerServer.Close()
 
 	client := routerServer.Client()
@@ -354,7 +355,7 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 	key, _ := ks.Create("Live Test Key", "sk-live-key")
 
 	ms, _ := store.NewModelStore(tempDir)
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil))
 	defer server.Close()
 
 	payload := map[string]any{
@@ -403,7 +404,7 @@ func TestOpenCodeLiveCompletion(t *testing.T) {
 
 // Test /v1/models endpoint
 func TestOpenCodeModelsEndpoint(t *testing.T) {
-	compH := handler.NewCompletionHandler(nil, nil, nil, nil)
+	compH := handler.NewCompletionHandler(nil, nil, nil, nil, nil)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/models", compH.Models)
 	server := httptest.NewServer(mux)
@@ -443,7 +444,7 @@ func TestOpenCodeModelEnableDisable(t *testing.T) {
 	ms, _ := store.NewModelStore(tempDir)
 	key, _ := ks.Create("Admin Key", "sk-test-admin-key")
 
-	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil))
+	server := httptest.NewServer(handler.NewRouter(ks, ms, nil, nil, nil))
 	defer server.Close()
 
 	client := server.Client()
@@ -611,7 +612,7 @@ func TestOpenCodeSessionRotationOnRateLimit(t *testing.T) {
 	key, _ := ks.Create("Rate Limit Test Key", "sk-ratelimit-key-1")
 
 	client := opencode.NewClient(mockUpstream.URL, nil)
-	router := handler.NewRouter(ks, ms, client, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -707,7 +708,7 @@ func TestOpenCodeModelTestPing(t *testing.T) {
 	ms, _ := store.NewModelStore(tempDir)
 	client := opencode.NewClient(mockUpstream.URL, nil)
 
-	router := handler.NewRouter(ks, ms, client, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -784,7 +785,7 @@ func TestOpenCodeVersionManager(t *testing.T) {
 	ks, _ := store.NewKeyStore(tempDir)
 	ms, _ := store.NewModelStore(tempDir)
 	client := opencode.NewClient("", vm2)
-	router := handler.NewRouter(ks, ms, client, nil)
+	router := handler.NewRouter(ks, ms, client, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -814,7 +815,7 @@ func TestSPAStaticServing(t *testing.T) {
 		},
 	}
 
-	router := handler.NewRouter(nil, nil, nil, nil, mockFS)
+	router := handler.NewRouter(nil, nil, nil, nil, nil, mockFS)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -954,7 +955,7 @@ func TestResponsesStreamTranslation(t *testing.T) {
 	defer upstream.Close()
 
 	client := opencode.NewClient(upstream.URL, nil)
-	router := handler.NewRouter(nil, nil, client, nil)
+	router := handler.NewRouter(nil, nil, client, nil, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1022,7 +1023,7 @@ func TestAntigravityAccountsAndProvider(t *testing.T) {
 	agStore, _ := antigravity.NewAccountStore(tempDir)
 	agClient := antigravity.NewClient(agStore)
 
-	router := handler.NewRouter(ks, ms, nil, agClient)
+	router := handler.NewRouter(ks, ms, nil, agClient, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1169,7 +1170,7 @@ func TestAntigravityQuotaTracker(t *testing.T) {
 	agStore, _ := antigravity.NewAccountStore(tempDir)
 	agClient := antigravity.NewClient(agStore)
 
-	router := handler.NewRouter(ks, ms, nil, agClient)
+	router := handler.NewRouter(ks, ms, nil, agClient, nil)
 	server := httptest.NewServer(router)
 	defer server.Close()
 
@@ -1226,4 +1227,108 @@ func TestAntigravityQuotaTracker(t *testing.T) {
 		t.Errorf("expected 404 for nonexistent account quota, got %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+func TestTokenSaverRTKWorkflow(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-tokensaver-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	rtkSvc, err := rtk.NewService(tempDir)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	router := handler.NewRouter(ks, ms, nil, nil, rtkSvc)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := server.Client()
+
+	// 1. GET /api/tokensaver status
+	resp, err := client.Get(server.URL + "/api/tokensaver")
+	if err != nil {
+		t.Fatalf("GET /api/tokensaver: %v", err)
+	}
+	var statusResp struct {
+		RTKEnabled bool           `json:"rtk_enabled"`
+		Stats      map[string]any `json:"stats"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
+		t.Fatalf("decode tokensaver status: %v", err)
+	}
+	resp.Body.Close()
+
+	if !statusResp.RTKEnabled {
+		t.Errorf("expected rtk_enabled to be true initially")
+	}
+
+	// 2. POST /api/tokensaver/test simulation
+	longDiff := strings.Join([]string{
+		"diff --git a/app.js b/app.js",
+		"index 123..456 100644",
+		"--- a/app.js",
+		"+++ b/app.js",
+		"@@ -1,3 +1,150 @@",
+	}, "\n")
+	for i := 0; i < 150; i++ {
+		longDiff += fmt.Sprintf("\n+line %d %s", i, strings.Repeat("a", 25))
+	}
+
+	testPayload, _ := json.Marshal(map[string]string{"text": longDiff})
+	resp, err = client.Post(server.URL+"/api/tokensaver/test", "application/json", bytes.NewReader(testPayload))
+	if err != nil {
+		t.Fatalf("POST /api/tokensaver/test: %v", err)
+	}
+	var testResp struct {
+		Filter       string  `json:"filter"`
+		OriginalSize int     `json:"original_size"`
+		SavedBytes   int     `json:"saved_bytes"`
+		SavedPercent float64 `json:"saved_percent"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&testResp); err != nil {
+		t.Fatalf("decode test response: %v", err)
+	}
+	resp.Body.Close()
+
+	if testResp.Filter != "git-diff" {
+		t.Errorf("expected filter git-diff, got %s", testResp.Filter)
+	}
+	if testResp.SavedBytes <= 0 {
+		t.Errorf("expected saved_bytes > 0, got %d", testResp.SavedBytes)
+	}
+
+	// 3. PUT /api/tokensaver toggle off
+	togglePayload, _ := json.Marshal(map[string]any{"rtk_enabled": false})
+	req, _ := http.NewRequest("PUT", server.URL+"/api/tokensaver", bytes.NewReader(togglePayload))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /api/tokensaver: %v", err)
+	}
+	var updateResp struct {
+		RTKEnabled bool `json:"rtk_enabled"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&updateResp)
+	resp.Body.Close()
+
+	if updateResp.RTKEnabled {
+		t.Errorf("expected rtk_enabled to be false after toggle")
+	}
+
+	// 4. PUT /api/tokensaver toggle back on
+	togglePayload, _ = json.Marshal(map[string]any{"rtk_enabled": true})
+	req, _ = http.NewRequest("PUT", server.URL+"/api/tokensaver", bytes.NewReader(togglePayload))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ = client.Do(req)
+	_ = json.NewDecoder(resp.Body).Decode(&updateResp)
+	resp.Body.Close()
+
+	if !updateResp.RTKEnabled {
+		t.Errorf("expected rtk_enabled to be true after second toggle")
+	}
 }

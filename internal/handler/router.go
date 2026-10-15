@@ -8,14 +8,16 @@ import (
 
 	"lun-router/internal/antigravity"
 	"lun-router/internal/opencode"
+	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
 
-func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, staticFS ...fs.FS) http.Handler {
+func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service, staticFS ...fs.FS) http.Handler {
 	mux := http.NewServeMux()
 
 	keyH := NewKeyHandler(ks)
-	compH := NewCompletionHandler(ks, ms, client, agClient)
+	compH := NewCompletionHandler(ks, ms, client, agClient, rtkSvc)
+	tsH := NewTokenSaverHandler(rtkSvc)
 
 	// API Keys Management
 	mux.HandleFunc("GET /api/health", keyH.Health)
@@ -25,6 +27,11 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	mux.HandleFunc("PUT /api/keys/{id}", keyH.Update)
 	mux.HandleFunc("DELETE /api/keys/{id}", keyH.Delete)
 	mux.HandleFunc("GET /api/keys/verify", keyH.Verify)
+
+	// Token Saver Routes (RTK)
+	mux.HandleFunc("GET /api/tokensaver", tsH.GetStatus)
+	mux.HandleFunc("PUT /api/tokensaver", tsH.Update)
+	mux.HandleFunc("POST /api/tokensaver/test", tsH.TestCompress)
 
 	// OpenCode Free API Routes (Issue #4781 bypass)
 	mux.HandleFunc("GET /v1/models", compH.Models)

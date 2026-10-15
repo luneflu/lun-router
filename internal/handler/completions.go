@@ -12,6 +12,7 @@ import (
 
 	"lun-router/internal/antigravity"
 	"lun-router/internal/opencode"
+	"lun-router/internal/rtk"
 	"lun-router/internal/store"
 )
 
@@ -20,9 +21,10 @@ type CompletionHandler struct {
 	modelStore *store.ModelStore
 	client     *opencode.Client
 	agClient   *antigravity.Client
+	rtkService *rtk.Service
 }
 
-func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client) *CompletionHandler {
+func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, rtkSvc *rtk.Service) *CompletionHandler {
 	if client == nil {
 		client = opencode.NewClient("", nil)
 	}
@@ -31,6 +33,7 @@ func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *openc
 		modelStore: ms,
 		client:     client,
 		agClient:   agClient,
+		rtkService: rtkSvc,
 	}
 }
 
@@ -420,6 +423,16 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	clientWantsStream, _ := bodyMap["stream"].(bool)
+
+	// Token Saver (RTK): auto-compress tool output before dispatching to upstream LLMs
+	// Client opt-out via X-9Router-Token-Saver: off or X-Token-Saver: off
+	clientOptOut := strings.EqualFold(r.Header.Get("X-9Router-Token-Saver"), "off") ||
+		strings.EqualFold(r.Header.Get("X-Token-Saver"), "off") ||
+		strings.EqualFold(r.URL.Query().Get("token_saver"), "off")
+
+	if h.rtkService != nil {
+		h.rtkService.ProcessBody(bodyMap, clientOptOut)
+	}
 
 	// Check if this is an Antigravity model
 	if antigravity.IsAntigravityModel(model) {

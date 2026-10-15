@@ -1,0 +1,185 @@
+package rtk
+
+import (
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+var (
+	reGitDiffHead   = regexp.MustCompile(`(?m)^diff --git `)
+	reGitDiffHunk   = regexp.MustCompile(`(?m)^@@ `)
+	reGitStatusHead = regexp.MustCompile(`(?m)^On branch |^nothing to commit|^Changes (not |to be )|^Untracked files:`)
+	reBuildOutput   = regexp.MustCompile(`(?im)^(npm (warn|error|ERR!)|yarn (warn|error)|\s*Compiling\s+\S+|\s*Downloading\s+\S+|added \d+ package|\[ERROR\]|BUILD (SUCCESS|FAILED)|\s*Finished\s+|Successfully (installed|built)|ERROR:)`)
+	reTreeGlyph     = regexp.MustCompile(`[├└]──|│  `)
+	reLsRow         = regexp.MustCompile(`(?m)^[-dlbcps][rwx-]{9}`)
+	reLsTotal       = regexp.MustCompile(`(?m)^total \d+$`)
+	reWindowsDrive  = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
+)
+
+type FilterFunc func(string) string
+
+func AutoDetectFilter(text string) (FilterFunc, string) {
+	head := text
+	if len(head) > DetectWindow {
+		head = head[:DetectWindow]
+	}
+
+	if reCommitHeader.MatchString(head) {
+		return func(s string) string { return GitLog(s, GitLogMaxLines) }, "git-log"
+	}
+
+	if reGitDiffHead.MatchString(head) || reGitDiffHunk.MatchString(head) {
+		return func(s string) string { return GitDiff(s, GitDiffMaxLines) }, "git-diff"
+	}
+
+	if reGitStatusHead.MatchString(head) {
+		return GitStatus, "git-status"
+	}
+
+	// Build output BEFORE porcelain check: prevents cargo "Compiling" misdetection as git-status
+	if reBuildOutput.MatchString(head) {
+		return BuildOutput, "build-output"
+	}
+
+	if isMostlyPorcelain(head) {
+		return GitStatus, "git-status"
+	}
+
+	lines := strings.Split(head, "\n")
+	var nonEmpty []string
+	for _, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			nonEmpty = append(nonEmpty, l)
+		}
+	}
+
+	// First 5 non-empty lines, ANY matches "file:number:content"
+	first5 := nonEmpty
+	if len(first5) > 5 {
+		first5 = first5[:5]
+	}
+	for _, l := range first5 {
+		if isGrepLine(l) {
+			return Grep, "grep"
+		}
+	}
+
+	// find: ALL non-empty lines path-like, >= 3 lines
+	if len(nonEmpty) >= 3 {
+		allPath := true
+		for _, l := range nonEmpty {
+			if !isPathLike(l) {
+				allPath = false
+				break
+			}
+		}
+		if allPath {
+			return Find, "find"
+		}
+	}
+
+	// Tree glyphs
+	if reTreeGlyph.MatchString(head) {
+		return Tree, "tree"
+	}
+
+	// ls -la
+	if reLsTotal.MatchString(head) || len(reLsRow.FindAllString(head, -1)) >= 3 {
+		return Ls, "ls"
+	}
+
+	// Search list header
+	if reSearchListHdr.MatchString(head) {
+		return SearchList, "search-list"
+	}
+
+	allLines := strings.Split(text, "\n")
+	if len(allLines) >= SmartTruncateMinLines && isLineNumbered(allLines) {
+		return ReadNumbered, "read-numbered"
+	}
+
+	// dedupLog for generic multi-line noise
+	if len(nonEmpty) >= 5 {
+		return DedupLog, "dedup-log"
+	}
+
+	// Last resort: big blob with no structure
+	if len(allLines) >= SmartTruncateMinLines {
+		return SmartTruncate, "smart-truncate"
+	}
+
+	return nil, ""
+}
+
+func isGrepLine(line string) bool {
+	first := strings.Index(line, ":")
+	if first == -1 {
+		return false
+	}
+	second := strings.Index(line[first+1:], ":")
+	if second == -1 {
+		return false
+	}
+	second += first + 1
+	lineno := line[first+1 : second]
+	_, err := strconv.Atoi(lineno)
+	return err == nil
+}
+
+func isPathLike(line string) bool {
+	t := strings.TrimSpace(line)
+	if t == "" {
+		return false
+	}
+	if reWindowsDrive.MatchString(t) {
+		return true
+	}
+	if strings.Contains(t, ":") {
+		return false
+	}
+	return strings.HasPrefix(t, ".") || strings.HasPrefix(t, "/") || strings.Contains(t, "/")
+}
+
+func isMostlyPorcelain(head string) bool {
+	lines := strings.Split(head, "\n")
+	var valid []string
+	for _, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			valid = append(valid, l)
+		}
+	}
+	if len(valid) < 3 {
+		return false
+	}
+
+	hits := 0
+	for _, l := range valid {
+		if len(l) >= 3 && rePorcelainStatus.MatchString(l[:3]) {
+			hits++
+		}
+	}
+	return float64(hits)/float64(len(valid)) >= 0.6
+}
+
+func isLineNumbered(lines []string) bool {
+	hits := 0
+	nonEmpty := 0
+	sample := lines
+	if len(sample) > 100 {
+		sample = sample[:100]
+	}
+	for _, l := range sample {
+		if len(l) == 0 {
+			continue
+		}
+		nonEmpty++
+		if reReadNumberedLn.MatchString(l) {
+			hits++
+		}
+	}
+	if nonEmpty < 5 {
+		return false
+	}
+	return float64(hits)/float64(nonEmpty) >= ReadNumberedMinRatio
+}
