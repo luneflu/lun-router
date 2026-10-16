@@ -1467,7 +1467,6 @@ func TestCavemanWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	defer cavemanSvc.Close()
 
 	router := handler.NewRouter(ks, ms, nil, nil, nil, cavemanSvc, nil, nil, nil)
 	server := httptest.NewServer(router)
@@ -1555,7 +1554,6 @@ func TestPonytailWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	defer ponytailSvc.Close()
 
 	router := handler.NewRouter(ks, ms, nil, nil, nil, nil, ponytailSvc, nil, nil)
 	server := httptest.NewServer(router)

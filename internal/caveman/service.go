@@ -1,32 +1,20 @@
 package caveman
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
-)
-
-const (
-	UpstreamRepo       = "https://github.com/JuliusBrussee/caveman"
-	GitHubCommitAPI    = "https://api.github.com/repos/JuliusBrussee/caveman/commits/main"
-	DefaultCheckPeriod = 6 * time.Hour
 )
 
 type Service struct {
-	mu            sync.RWMutex
-	filePath      string
-	config        Config
-	httpClient    *http.Client
-	stopCh        chan struct{}
+	mu       sync.RWMutex
+	filePath string
+	config   Config
 
 	totalRequests    atomic.Int64
 	injectedRequests atomic.Int64
@@ -37,64 +25,25 @@ func NewService(dataDir string) (*Service, error) {
 		return nil, fmt.Errorf("mkdir dataDir: %w", err)
 	}
 
-	fp := filepath.Join(dataDir, "caveman.json")
 	s := &Service{
-		filePath: fp,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		stopCh: make(chan struct{}),
+		filePath: filepath.Join(dataDir, "caveman.json"),
 		config: Config{
-			Enabled:            true,
-			Mode:               "caveman",
-			AutoUpdate:         true,
-			CheckIntervalHours: 6,
-			Rules: map[string]string{
-				"caveman":   DefaultCavemanPrompt,
-				"ultracave": DefaultUltracavePrompt,
-				"megacave":  DefaultMegacavePrompt,
-			},
+			Enabled: true,
+			Mode:    "caveman",
 		},
 	}
 
 	if err := s.load(); err != nil && !os.IsNotExist(err) {
-		log.Printf("[Caveman] warning: failed to load config %s: %v", fp, err)
+		log.Printf("[Caveman] warning: failed to load config %s: %v", s.filePath, err)
 	}
 
-	// Ensure rules are not empty
 	s.mu.Lock()
-	if s.config.Rules == nil {
-		s.config.Rules = make(map[string]string)
-	}
-	if s.config.Rules["caveman"] == "" {
-		s.config.Rules["caveman"] = DefaultCavemanPrompt
-	}
-	if s.config.Rules["ultracave"] == "" {
-		s.config.Rules["ultracave"] = DefaultUltracavePrompt
-	}
-	if s.config.Rules["megacave"] == "" {
-		s.config.Rules["megacave"] = DefaultMegacavePrompt
-	}
-	if s.config.Mode == "" {
+	if builtinPrompt(s.config.Mode) == "" && s.config.Mode != "custom" {
 		s.config.Mode = "caveman"
-	}
-	if s.config.CheckIntervalHours <= 0 {
-		s.config.CheckIntervalHours = 6
 	}
 	s.mu.Unlock()
 
-	// Initial async sync check and background timer
-	go s.startBackgroundWorker()
-
 	return s, nil
-}
-
-func (s *Service) Close() {
-	select {
-	case <-s.stopCh:
-	default:
-		close(s.stopCh)
-	}
 }
 
 func (s *Service) load() error {
@@ -106,9 +55,25 @@ func (s *Service) load() error {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return err
 	}
+
+	// A data dir written before the rules moved into the binary still carries the
+	// prompt text and the upstream-sync settings. Unknown keys are ignored on decode,
+	// so rewrite the file once to drop them; nothing reads them anymore.
+	var legacy struct {
+		Rules      map[string]string `json:"rules"`
+		AutoUpdate *bool             `json:"auto_update"`
+	}
+	_ = json.Unmarshal(data, &legacy)
+	prune := legacy.Rules != nil || legacy.AutoUpdate != nil
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.config = cfg
+	if prune {
+		if err := s.saveLocked(); err != nil {
+			log.Printf("[Caveman] warning: failed to drop legacy config keys: %v", err)
+		}
+	}
 	return nil
 }
 
@@ -120,174 +85,60 @@ func (s *Service) saveLocked() error {
 	return os.WriteFile(s.filePath, data, 0644)
 }
 
-func (s *Service) startBackgroundWorker() {
-	// Wait 2 seconds after startup for initial check
-	select {
-	case <-s.stopCh:
-		return
-	case <-time.After(2 * time.Second):
-	}
-
-	s.mu.RLock()
-	autoUpdate := s.config.AutoUpdate
-	hours := s.config.CheckIntervalHours
-	s.mu.RUnlock()
-
-	if autoUpdate {
-		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-		updated, err := s.SyncUpstream(ctx)
-		cancel()
-		if err != nil {
-			log.Printf("[Caveman] initial upstream sync check failed: %v", err)
-		} else if updated {
-			log.Printf("[Caveman] initial upstream sync: updated rules to latest commit")
-		}
-	}
-
-	interval := time.Duration(hours) * time.Hour
-	if interval < time.Hour {
-		interval = DefaultCheckPeriod
-	}
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-s.stopCh:
-			return
-		case <-ticker.C:
-			s.mu.RLock()
-			auto := s.config.AutoUpdate
-			s.mu.RUnlock()
-
-			if auto {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				_, _ = s.SyncUpstream(ctx)
-				cancel()
-			}
-		}
+// builtinPrompt returns the compiled-in rule text for a mode, or "" when the mode is
+// not one of the built-ins.
+func builtinPrompt(mode string) string {
+	switch mode {
+	case "caveman":
+		return DefaultCavemanPrompt
+	case "ultracave":
+		return DefaultUltracavePrompt
+	case "megacave":
+		return DefaultMegacavePrompt
+	default:
+		return ""
 	}
 }
 
-// cleanSkillMarkdown strips YAML frontmatter and extracts prompt body
-func cleanSkillMarkdown(raw string) string {
-	raw = strings.ReplaceAll(raw, "\r\n", "\n")
-	if strings.HasPrefix(raw, "---\n") {
-		idx := strings.Index(raw[4:], "\n---\n")
-		if idx != -1 {
-			raw = raw[4+idx+5:]
-		}
+// activePrompt resolves the text that gets injected. Built-in modes read straight from
+// the constants in defaults.go, so a redeploy takes effect on the next restart; no
+// stored copy and nothing fetched at runtime. Only the custom mode carries text from
+// disk.
+func activePrompt(mode, custom string) string {
+	if mode == "custom" && custom != "" {
+		return custom
 	}
-	return strings.TrimSpace(raw)
+	if prompt := builtinPrompt(mode); prompt != "" {
+		return prompt
+	}
+	return DefaultCavemanPrompt
 }
 
-// SyncUpstream checks GitHub for changes and updates rules
-func (s *Service) SyncUpstream(ctx context.Context) (bool, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", GitHubCommitAPI, nil)
-	if err != nil {
-		return false, fmt.Errorf("create req: %w", err)
-	}
-	req.Header.Set("User-Agent", "lun-router-caveman/1.0")
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("fetch commit: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return false, fmt.Errorf("github api status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var commitResp struct {
-		SHA    string `json:"sha"`
-		Commit struct {
-			Message string `json:"message"`
-			Author  struct {
-				Date string `json:"date"`
-			} `json:"author"`
-		} `json:"commit"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&commitResp); err != nil {
-		return false, fmt.Errorf("decode commit json: %w", err)
-	}
-
-	s.mu.RLock()
-	currentSHA := s.config.UpstreamCommit
-	s.mu.RUnlock()
-
-	// If commit hasn't changed, just touch LastSync
-	if currentSHA == commitResp.SHA && currentSHA != "" {
-		s.mu.Lock()
-		s.config.LastSync = time.Now()
-		_ = s.saveLocked()
-		s.mu.Unlock()
-		return false, nil
-	}
-
-	// Fetch latest skill files from raw GitHub
-	fetchSkill := func(skillName string) (string, error) {
-		u := fmt.Sprintf("https://raw.githubusercontent.com/JuliusBrussee/caveman/main/skills/%s/SKILL.md", skillName)
-		r, err := http.NewRequestWithContext(ctx, "GET", u, nil)
-		if err != nil {
-			return "", err
-		}
-		r.Header.Set("User-Agent", "lun-router-caveman/1.0")
-		res, err := s.httpClient.Do(r)
-		if err != nil {
-			return "", err
-		}
-		defer res.Body.Close()
-		if res.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("status %d for %s", res.StatusCode, skillName)
-		}
-		b, err := io.ReadAll(io.LimitReader(res.Body, 64*1024))
-		if err != nil {
-			return "", err
-		}
-		cleaned := cleanSkillMarkdown(string(b))
-		if len(cleaned) == 0 {
-			return "", fmt.Errorf("empty skill body for %s", skillName)
-		}
-		return cleaned, nil
-	}
-
-	newRules := make(map[string]string)
-	for _, skill := range []string{"caveman", "ultracave", "megacave"} {
-		content, err := fetchSkill(skill)
-		if err != nil {
-			log.Printf("[Caveman] warning: failed to fetch skill %s: %v (using fallback)", skill, err)
-			s.mu.RLock()
-			newRules[skill] = s.config.Rules[skill]
-			s.mu.RUnlock()
-		} else {
-			newRules[skill] = content
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for k, v := range newRules {
-		if v != "" {
-			s.config.Rules[k] = v
-		}
-	}
-	s.config.UpstreamCommit = commitResp.SHA
-	s.config.UpstreamCommitMsg = strings.TrimSpace(strings.Split(commitResp.Commit.Message, "\n")[0])
-	s.config.UpstreamCommitDate = commitResp.Commit.Author.Date
-	s.config.LastSync = time.Now()
-
-	if err := s.saveLocked(); err != nil {
-		log.Printf("[Caveman] failed to save updated config: %v", err)
-	}
-
-	log.Printf("[Caveman] synced rules with upstream commit %s (%s)", commitResp.SHA[:8], s.config.UpstreamCommitMsg)
-	return true, nil
+var availableModes = []ModeInfo{
+	{
+		ID:          "caveman",
+		Name:        "Classic Caveman",
+		Description: "Answer first, no fluff, every technical fact preserved. Standard English.",
+		TokensEst:   20,
+	},
+	{
+		ID:          "ultracave",
+		Name:        "Ultracave",
+		Description: "Grammar stripped, fragments only, maximum English terseness.",
+		TokensEst:   14,
+	},
+	{
+		ID:          "megacave",
+		Name:        "Megacave (文言文)",
+		Description: "Classical Chinese register, subjects omitted, maximum character reduction.",
+		TokensEst:   13,
+	},
+	{
+		ID:          "custom",
+		Name:        "Custom Rules",
+		Description: "User-defined system compression prompt instructions.",
+		TokensEst:   0,
+	},
 }
 
 // GetStatus returns current operational state
@@ -295,61 +146,12 @@ func (s *Service) GetStatus() StatusResponse {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	activePrompt := s.config.Rules[s.config.Mode]
-	if s.config.Mode == "custom" && s.config.CustomPrompt != "" {
-		activePrompt = s.config.CustomPrompt
-	}
-
-	var lastSyncPtr *time.Time
-	if !s.config.LastSync.IsZero() {
-		ls := s.config.LastSync
-		lastSyncPtr = &ls
-	}
-
-	shortCommit := s.config.UpstreamCommit
-	if len(shortCommit) > 8 {
-		shortCommit = shortCommit[:8]
-	}
-
-	available := []ModeInfo{
-		{
-			ID:          "caveman",
-			Name:        "Classic Caveman",
-			Description: "Answer first, no fluff, every technical fact preserved. Standard English.",
-			TokensEst:   20,
-		},
-		{
-			ID:          "ultracave",
-			Name:        "Ultracave",
-			Description: "Grammar stripped, fragments only, maximum English terseness.",
-			TokensEst:   14,
-		},
-		{
-			ID:          "megacave",
-			Name:        "Megacave (文言文)",
-			Description: "Classical Chinese register, subjects omitted, maximum character reduction.",
-			TokensEst:   13,
-		},
-		{
-			ID:          "custom",
-			Name:        "Custom Rules",
-			Description: "User-defined system compression prompt instructions.",
-			TokensEst:   0,
-		},
-	}
-
 	return StatusResponse{
-		Enabled:            s.config.Enabled,
-		Mode:               s.config.Mode,
-		AutoUpdate:         s.config.AutoUpdate,
-		LastSync:           lastSyncPtr,
-		UpstreamCommit:     shortCommit,
-		UpstreamCommitMsg:  s.config.UpstreamCommitMsg,
-		UpstreamCommitDate: s.config.UpstreamCommitDate,
-		UpstreamURL:        UpstreamRepo,
-		ActivePrompt:       activePrompt,
-		AvailableModes:     available,
-		CustomPrompt:       s.config.CustomPrompt,
+		Enabled:        s.config.Enabled,
+		Mode:           s.config.Mode,
+		ActivePrompt:   activePrompt(s.config.Mode, s.config.CustomPrompt),
+		AvailableModes: availableModes,
+		CustomPrompt:   s.config.CustomPrompt,
 		Stats: Stats{
 			TotalRequests:     s.totalRequests.Load(),
 			InjectedRequests:  s.injectedRequests.Load(),
@@ -359,34 +161,29 @@ func (s *Service) GetStatus() StatusResponse {
 }
 
 // UpdateConfig updates settings
-func (s *Service) UpdateConfig(enabled *bool, mode *string, autoUpdate *bool, customPrompt *string) (StatusResponse, error) {
+func (s *Service) UpdateConfig(enabled *bool, mode *string, customPrompt *string) (StatusResponse, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if enabled != nil {
 		s.config.Enabled = *enabled
 	}
 	if mode != nil && *mode != "" {
 		m := strings.ToLower(strings.TrimSpace(*mode))
-		if m == "caveman" || m == "ultracave" || m == "megacave" || m == "custom" {
+		if builtinPrompt(m) != "" || m == "custom" {
 			s.config.Mode = m
 		}
-	}
-	if autoUpdate != nil {
-		s.config.AutoUpdate = *autoUpdate
 	}
 	if customPrompt != nil {
 		s.config.CustomPrompt = *customPrompt
 	}
 
-	if err := s.saveLocked(); err != nil {
+	err := s.saveLocked()
+	s.mu.Unlock()
+
+	if err != nil {
 		return StatusResponse{}, fmt.Errorf("save config: %w", err)
 	}
-
-	s.mu.Unlock()
-	st := s.GetStatus()
-	s.mu.Lock()
-	return st, nil
+	return s.GetStatus(), nil
 }
 
 // Apply injects Caveman prompt into completion messages payload
@@ -401,7 +198,6 @@ func (s *Service) Apply(body map[string]any, headerCaveman, headerMode string) b
 	s.mu.RLock()
 	enabled := s.config.Enabled
 	mode := s.config.Mode
-	rules := s.config.Rules
 	custom := s.config.CustomPrompt
 	s.mu.RUnlock()
 
@@ -411,7 +207,7 @@ func (s *Service) Apply(body map[string]any, headerCaveman, headerMode string) b
 
 	if headerMode != "" {
 		hm := strings.ToLower(strings.TrimSpace(headerMode))
-		if hm == "caveman" || hm == "ultracave" || hm == "megacave" || hm == "custom" {
+		if builtinPrompt(hm) != "" || hm == "custom" {
 			mode = hm
 		}
 	} else if headerCaveman != "" && headerCaveman != "on" && headerCaveman != "true" {
@@ -422,13 +218,7 @@ func (s *Service) Apply(body map[string]any, headerCaveman, headerMode string) b
 		}
 	}
 
-	prompt := rules[mode]
-	if mode == "custom" && custom != "" {
-		prompt = custom
-	}
-	if prompt == "" {
-		prompt = DefaultCavemanPrompt
-	}
+	prompt := activePrompt(mode, custom)
 
 	cavemanInstruction := "\n\n[System directive: Response style]\n" + prompt
 
@@ -471,10 +261,11 @@ func (s *Service) Apply(body map[string]any, headerCaveman, headerMode string) b
 	}
 
 	if !foundSystem {
-		// Prepend system message
+		// Prepend system message. Same instruction text as the append path, header
+		// included, so the injected directive does not depend on the body shape.
 		newSys := map[string]any{
 			"role":    "system",
-			"content": prompt,
+			"content": cavemanInstruction,
 		}
 		msgs = append([]any{newSys}, msgs...)
 	}

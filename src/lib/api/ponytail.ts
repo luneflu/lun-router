@@ -11,7 +11,6 @@ export async function fetchPonytailStatus(): Promise<PonytailStatus> {
 export async function updatePonytailConfig(payload: {
 	enabled?: boolean;
 	mode?: string;
-	auto_update?: boolean;
 	custom_prompt?: string;
 }): Promise<PonytailStatus> {
 	const res = await fetch('/api/ponytail', {
@@ -21,22 +20,6 @@ export async function updatePonytailConfig(payload: {
 	});
 	if (!res.ok) {
 		throw new Error(`Failed to update Ponytail config: ${res.statusText}`);
-	}
-	return res.json();
-}
-
-export async function syncPonytailUpstream(): Promise<{
-	ok: boolean;
-	updated: boolean;
-	error?: string;
-	status: PonytailStatus;
-}> {
-	const res = await fetch('/api/ponytail/sync', {
-		method: 'POST'
-	});
-	if (!res.ok) {
-		const data = await res.json().catch(() => null);
-		throw new Error(data?.error || `Failed to sync with upstream Ponytail: ${res.statusText}`);
 	}
 	return res.json();
 }

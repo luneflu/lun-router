@@ -10,13 +10,10 @@
 	import { sendChatCompletion } from '$lib/api/completions';
 	import { fetchProviderModels } from '$lib/api/providers';
 
-	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
-	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import CopyIcon from '@lucide/svelte/icons/copy';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
-	import GitCommitIcon from '@lucide/svelte/icons/git-commit';
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import RocketIcon from '@lucide/svelte/icons/rocket';
 	import SquareIcon from '@lucide/svelte/icons/square';
@@ -33,7 +30,6 @@
 	let copiedNormal = $state(false);
 	let copiedCaveman = $state(false);
 	let showFullPrompt = $state(false);
-	let syncSuccessMsg = $state<string | null>(null);
 
 	// Provider & Model selection for live testing
 	let selectedProvider = $state<'opencode' | 'antigravity'>('opencode');
@@ -256,23 +252,6 @@
 		abortController = null;
 	}
 
-	async function handleSyncUpstream() {
-		syncSuccessMsg = null;
-		try {
-			const updated = await cavemanState.syncUpstream();
-			if (updated) {
-				syncSuccessMsg = 'Successfully pulled latest rules from upstream GitHub!';
-			} else {
-				syncSuccessMsg = 'Already up to date with latest upstream commit.';
-			}
-			setTimeout(() => {
-				syncSuccessMsg = null;
-			}, 4000);
-		} catch {
-			// error stored in cavemanState.error
-		}
-	}
-
 	async function handleCopyPrompt() {
 		try {
 			await navigator.clipboard.writeText(cavemanState.activePrompt);
@@ -302,21 +281,6 @@
 			// ignore
 		}
 	}
-
-	function formatDateTime(iso: string | null): string {
-		if (!iso) return 'Never';
-		try {
-			const d = new Date(iso);
-			return d.toLocaleString(undefined, {
-				month: 'short',
-				day: 'numeric',
-				hour: '2-digit',
-				minute: '2-digit'
-			});
-		} catch {
-			return iso;
-		}
-	}
 </script>
 
 <div class="space-y-6">
@@ -330,19 +294,6 @@
 						<Badge variant={cavemanState.enabled ? 'default' : 'outline'} class="text-[10px]">
 							{cavemanState.enabled ? 'Active' : 'Disabled'}
 						</Badge>
-						{#if cavemanState.upstreamCommit}
-							<a
-								href={`${cavemanState.upstreamURL}/commit/${cavemanState.upstreamCommit}`}
-								target="_blank"
-								rel="noreferrer"
-								class="inline-flex items-center gap-1 rounded border border-border/60 bg-muted/40 px-2 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground"
-							>
-								<GitCommitIcon class="h-3 w-3" />
-								{cavemanState.upstreamCommit}
-								<ExternalLinkIcon class="h-2.5 w-2.5" />
-							</a>
-						{/if}
-						<Badge variant="secondary" class="text-[10px]">Auto-Synced</Badge>
 					</div>
 					<Card.Description>
 						Why many token when few do trick. Enforces ultra-concise system instructions to cut
@@ -351,17 +302,6 @@
 				</div>
 
 				<div class="flex items-center gap-3">
-					<Button
-						variant="outline"
-						size="sm"
-						onclick={handleSyncUpstream}
-						disabled={cavemanState.syncing}
-						class="h-9 gap-1.5 text-xs"
-					>
-						<RefreshCwIcon class={`h-3.5 w-3.5 ${cavemanState.syncing ? 'animate-spin' : ''}`} />
-						{cavemanState.syncing ? 'Syncing...' : 'Sync with GitHub'}
-					</Button>
-
 					<div class="flex items-center gap-2 rounded-lg border bg-muted/20 px-3 py-1.5">
 						<Switch
 							id="caveman-toggle"
@@ -379,14 +319,6 @@
 				</div>
 			</div>
 		</Card.Header>
-
-		{#if syncSuccessMsg}
-			<div
-				class="mx-6 mb-4 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400"
-			>
-				{syncSuccessMsg}
-			</div>
-		{/if}
 
 		{#if cavemanState.error}
 			<div
@@ -424,15 +356,12 @@
 				</div>
 
 				<div class="rounded-lg border bg-card p-3">
-					<div class="text-xs font-medium text-muted-foreground">Upstream Sync</div>
-					<div
-						class="mt-1 truncate text-sm font-semibold"
-						title={cavemanState.upstreamCommitMsg || 'Up to date'}
-					>
-						{cavemanState.upstreamCommit ? `Commit ${cavemanState.upstreamCommit}` : 'Bundled'}
+					<div class="text-xs font-medium text-muted-foreground">Prompt Source</div>
+					<div class="mt-1 truncate text-sm font-semibold" title="Compiled into the router binary">
+						Built-in
 					</div>
 					<div class="mt-0.5 truncate text-[11px] text-muted-foreground">
-						{formatDateTime(cavemanState.lastSync)}
+						{cavemanState.mode} · {cavemanState.activePrompt.length.toLocaleString()} chars
 					</div>
 				</div>
 			</div>

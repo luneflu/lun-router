@@ -41,7 +41,6 @@ func (h *PonytailHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Enabled      *bool   `json:"enabled"`
 		Mode         *string `json:"mode"`
-		AutoUpdate   *bool   `json:"auto_update"`
 		CustomPrompt *string `json:"custom_prompt"`
 	}
 
@@ -52,7 +51,7 @@ func (h *PonytailHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	st, err := h.service.UpdateConfig(req.Enabled, req.Mode, req.AutoUpdate, req.CustomPrompt)
+	st, err := h.service.UpdateConfig(req.Enabled, req.Mode, req.CustomPrompt)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -62,37 +61,6 @@ func (h *PonytailHandler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(st)
-}
-
-// POST /api/ponytail/sync (Triggers sync with https://github.com/DietrichGebert/ponytail)
-func (h *PonytailHandler) SyncUpstream(w http.ResponseWriter, r *http.Request) {
-	if h.service == nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Ponytail service not initialized"})
-		return
-	}
-
-	ctx := r.Context()
-	updated, err := h.service.SyncUpstream(ctx)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":      false,
-			"updated": false,
-			"error":   err.Error(),
-			"status":  h.service.GetStatus(),
-		})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":      true,
-		"updated": updated,
-		"status":  h.service.GetStatus(),
-	})
 }
 
 // POST /api/ponytail/test

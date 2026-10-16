@@ -222,12 +222,6 @@ export interface CavemanStats {
 export interface CavemanStatus {
 	enabled: boolean;
 	mode: string;
-	auto_update: boolean;
-	last_sync: string | null;
-	upstream_commit: string;
-	upstream_commit_msg: string;
-	upstream_commit_date: string;
-	upstream_url: string;
 	active_prompt: string;
 	available_modes: CavemanModeInfo[];
 	custom_prompt?: string;
@@ -260,12 +254,6 @@ export interface PonytailStats {
 export interface PonytailStatus {
 	enabled: boolean;
 	mode: string;
-	auto_update: boolean;
-	last_sync: string | null;
-	upstream_commit: string;
-	upstream_commit_msg: string;
-	upstream_commit_date: string;
-	upstream_url: string;
 	active_prompt: string;
 	available_modes: PonytailModeInfo[];
 	custom_prompt?: string;

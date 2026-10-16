@@ -58,13 +58,11 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	// Caveman Routes (Prompt & Voice Optimization)
 	mux.HandleFunc("GET /api/caveman", caveH.GetStatus)
 	mux.HandleFunc("PUT /api/caveman", caveH.UpdateConfig)
-	mux.HandleFunc("POST /api/caveman/sync", caveH.SyncUpstream)
 	mux.HandleFunc("POST /api/caveman/test", caveH.TestPrompt)
 
 	// Ponytail Routes (Lazy Senior Developer & Anti-Bloat)
 	mux.HandleFunc("GET /api/ponytail", ponyH.GetStatus)
 	mux.HandleFunc("PUT /api/ponytail", ponyH.UpdateConfig)
-	mux.HandleFunc("POST /api/ponytail/sync", ponyH.SyncUpstream)
 	mux.HandleFunc("POST /api/ponytail/test", ponyH.TestPrompt)
 
 	// OpenCode Free API Routes (Issue #4781 bypass)

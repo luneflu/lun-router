@@ -1,20 +1,9 @@
 import type { PonytailModeInfo, PonytailStats, PonytailTestResult } from '$lib/types';
-import {
-	fetchPonytailStatus,
-	updatePonytailConfig,
-	syncPonytailUpstream,
-	testPonytailPrompt
-} from '$lib/api/ponytail';
+import { fetchPonytailStatus, updatePonytailConfig, testPonytailPrompt } from '$lib/api/ponytail';
 
 export class PonytailState {
 	enabled = $state(true);
 	mode = $state('full');
-	autoUpdate = $state(true);
-	lastSync = $state<string | null>(null);
-	upstreamCommit = $state('');
-	upstreamCommitMsg = $state('');
-	upstreamCommitDate = $state('');
-	upstreamURL = $state('https://github.com/DietrichGebert/ponytail');
 	activePrompt = $state('');
 	availableModes = $state<PonytailModeInfo[]>([
 		{
@@ -49,7 +38,6 @@ export class PonytailState {
 	});
 
 	loading = $state(false);
-	syncing = $state(false);
 	toggling = $state(false);
 	testing = $state(false);
 	error = $state<string | null>(null);
@@ -62,12 +50,6 @@ export class PonytailState {
 			const data = await fetchPonytailStatus();
 			this.enabled = data.enabled;
 			this.mode = data.mode;
-			this.autoUpdate = data.auto_update;
-			this.lastSync = data.last_sync;
-			this.upstreamCommit = data.upstream_commit;
-			this.upstreamCommitMsg = data.upstream_commit_msg;
-			this.upstreamCommitDate = data.upstream_commit_date;
-			this.upstreamURL = data.upstream_url;
 			this.activePrompt = data.active_prompt;
 			if (data.available_modes) {
 				this.availableModes = data.available_modes;
@@ -107,32 +89,6 @@ export class PonytailState {
 			this.error = e instanceof Error ? e.message : 'Failed to change Ponytail mode';
 		} finally {
 			this.loading = false;
-		}
-	}
-
-	async syncUpstream() {
-		try {
-			this.syncing = true;
-			this.error = null;
-			const res = await syncPonytailUpstream();
-			if (res.status) {
-				const data = res.status;
-				this.enabled = data.enabled;
-				this.mode = data.mode;
-				this.lastSync = data.last_sync;
-				this.upstreamCommit = data.upstream_commit;
-				this.upstreamCommitMsg = data.upstream_commit_msg;
-				this.upstreamCommitDate = data.upstream_commit_date;
-				this.activePrompt = data.active_prompt;
-				this.stats = data.stats;
-			}
-			return res.updated;
-		} catch (e: unknown) {
-			this.error =
-				e instanceof Error ? e.message : 'Failed to sync with upstream Ponytail repository';
-			throw e;
-		} finally {
-			this.syncing = false;
 		}
 	}
 
