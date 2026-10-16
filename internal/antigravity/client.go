@@ -676,7 +676,7 @@ func (c *Client) ExecuteChat(ctx context.Context, body map[string]any, stream bo
 	}
 
 	// Transform OpenAI messages to Gemini contents format
-	contents := convertOpenAIMessagesToGemini(body["messages"])
+	contents, systemInstruction := convertOpenAIMessagesToGemini(body["messages"], cleanModel)
 
 	// Build request payload according to Antigravity format
 	reqObj := map[string]any{
@@ -684,6 +684,76 @@ func (c *Client) ExecuteChat(ctx context.Context, body map[string]any, stream bo
 		"generationConfig": map[string]any{
 			"maxOutputTokens": 64000,
 		},
+	}
+	if systemInstruction != nil {
+		reqObj["systemInstruction"] = systemInstruction
+	} else if sys, ok := body["system"].(string); ok && strings.TrimSpace(sys) != "" {
+		reqObj["systemInstruction"] = map[string]any{
+			"role":  "user",
+			"parts": []map[string]any{{"text": sys}},
+		}
+	}
+
+	// Process tools if present
+	if toolsRaw, ok := body["tools"].([]any); ok && len(toolsRaw) > 0 {
+		var decls []map[string]any
+		seen := make(map[string]bool)
+		for _, tItem := range toolsRaw {
+			tMap, ok := tItem.(map[string]any)
+			if !ok {
+				continue
+			}
+			var fnName, fnDesc string
+			var fnParams map[string]any
+
+			if tType, _ := tMap["type"].(string); tType == "function" {
+				if fnObj, ok := tMap["function"].(map[string]any); ok {
+					fnName, _ = fnObj["name"].(string)
+					fnDesc, _ = fnObj["description"].(string)
+					if params, ok := fnObj["parameters"].(map[string]any); ok {
+						fnParams = params
+					}
+				}
+			} else if name, ok := tMap["name"].(string); ok && name != "" {
+				fnName = name
+				fnDesc, _ = tMap["description"].(string)
+				if schema, ok := tMap["input_schema"].(map[string]any); ok {
+					fnParams = schema
+				}
+			}
+
+			if fnName == "" {
+				continue
+			}
+			cleanName := sanitizeGeminiFunctionName(fnName)
+			if seen[cleanName] {
+				continue
+			}
+			seen[cleanName] = true
+
+			cleanedSchema := CleanJSONSchemaForAntigravity(fnParams)
+			decls = append(decls, map[string]any{
+				"name":        cleanName,
+				"description": fnDesc,
+				"parameters":  cleanedSchema,
+			})
+		}
+
+		if len(decls) > 0 {
+			reqObj["tools"] = []map[string]any{
+				{"functionDeclarations": decls},
+			}
+			reqObj["toolConfig"] = map[string]any{
+				"functionCallingConfig": map[string]any{
+					"mode": "VALIDATED",
+				},
+			}
+		}
+	}
+
+	// Strip blacklisted thinking fields rejected by Google generateContent
+	for _, k := range []string{"output_config", "thinking", "reasoning_effort", "reasoning", "enable_thinking", "thinking_budget", "thinkingConfig"} {
+		delete(reqObj, k)
 	}
 
 	projectID := acc.ProjectID
@@ -728,54 +798,396 @@ func (c *Client) ExecuteChat(ctx context.Context, body map[string]any, stream bo
 	return resp, err
 }
 
-func convertOpenAIMessagesToGemini(messages any) []map[string]any {
-	var contents []map[string]any
-
-	msgList, ok := messages.([]any)
-	if !ok {
-		if rawList, ok := messages.([]map[string]any); ok {
-			for _, m := range rawList {
+func convertOpenAIMessagesToGemini(messages any, model string) ([]map[string]any, map[string]any) {
+	var msgList []map[string]any
+	switch list := messages.(type) {
+	case []any:
+		for _, item := range list {
+			if m, ok := item.(map[string]any); ok {
 				msgList = append(msgList, m)
 			}
-		} else {
-			return []map[string]any{
-				{
-					"role":  "user",
-					"parts": []map[string]any{{"text": "Hello"}},
-				},
+		}
+	case []map[string]any:
+		msgList = list
+	case []map[string]string:
+		for _, item := range list {
+			m := make(map[string]any, len(item))
+			for k, v := range item {
+				m[k] = v
+			}
+			msgList = append(msgList, m)
+		}
+	}
+
+	if len(msgList) == 0 {
+		return []map[string]any{
+			{
+				"role":  "user",
+				"parts": []map[string]any{{"text": "Hello"}},
+			},
+		}, nil
+	}
+
+	// Build tool_call_id -> function_name map
+	tcID2Name := make(map[string]string)
+	for _, m := range msgList {
+		if role, _ := m["role"].(string); role == "assistant" {
+			if toolCalls, ok := m["tool_calls"].([]any); ok {
+				for _, tc := range toolCalls {
+					if tcMap, ok := tc.(map[string]any); ok {
+						id, _ := tcMap["id"].(string)
+						if fn, ok := tcMap["function"].(map[string]any); ok {
+							if fnName, ok := fn["name"].(string); ok && id != "" {
+								tcID2Name[id] = fnName
+							}
+						}
+					}
+				}
 			}
 		}
 	}
 
-	for _, item := range msgList {
-		m, ok := item.(map[string]any)
-		if !ok {
+	var systemParts []map[string]any
+	var rawContents []map[string]any
+	hasMultiple := len(msgList) > 1
+
+	for _, m := range msgList {
+		role, _ := m["role"].(string)
+
+		if role == "system" && hasMultiple {
+			txt := extractText(m["content"])
+			if strings.TrimSpace(txt) != "" {
+				systemParts = append(systemParts, map[string]any{"text": txt})
+			}
 			continue
 		}
-		role, _ := m["role"].(string)
-		content, _ := m["content"].(string)
 
 		geminiRole := "user"
 		if role == "assistant" {
 			geminiRole = "model"
 		}
 
-		contents = append(contents, map[string]any{
-			"role": geminiRole,
-			"parts": []map[string]any{
-				{"text": content},
-			},
-		})
+		var parts []map[string]any
+
+		if role != "tool" {
+			contentParts := convertOpenAIContentToParts(m["content"])
+			parts = append(parts, contentParts...)
+		}
+
+		if role == "assistant" {
+			if toolCalls, ok := m["tool_calls"].([]any); ok && len(toolCalls) > 0 {
+				firstCall := true
+				for _, tc := range toolCalls {
+					if tcMap, ok := tc.(map[string]any); ok {
+						fn, _ := tcMap["function"].(map[string]any)
+						fnName, _ := fn["name"].(string)
+						var args map[string]any
+						if argStr, ok := fn["arguments"].(string); ok {
+							_ = json.Unmarshal([]byte(argStr), &args)
+						}
+						if args == nil {
+							args = map[string]any{}
+						}
+						callID, _ := tcMap["id"].(string)
+						fc := map[string]any{
+							"name": sanitizeGeminiFunctionName(fnName),
+							"args": args,
+						}
+						if callID != "" {
+							fc["id"] = callID
+						}
+						callPart := map[string]any{
+							"functionCall": fc,
+						}
+						// Gemini 3+ rejects functionCall parts without thoughtSignature on the part.
+						// First call gets cached or default signature; sibling calls remain unsigned.
+						if firstCall {
+							callPart["thoughtSignature"] = GetThoughtSignature(callID, model)
+							firstCall = false
+						}
+						parts = append(parts, callPart)
+					}
+				}
+			}
+		}
+
+		if role == "tool" {
+			geminiRole = "user"
+			toolCallID, _ := m["tool_call_id"].(string)
+			respContent := extractText(m["content"])
+			var parsedResp any
+			if err := json.Unmarshal([]byte(respContent), &parsedResp); err != nil {
+				parsedResp = respContent
+			}
+			fnName := tcID2Name[toolCallID]
+			if fnName == "" {
+				fnName = "tool"
+			}
+			fr := map[string]any{
+				"name":     sanitizeGeminiFunctionName(fnName),
+				"response": map[string]any{"result": parsedResp},
+			}
+			if toolCallID != "" {
+				fr["id"] = toolCallID
+			}
+			parts = append(parts, map[string]any{"functionResponse": fr})
+		}
+
+		// functionResponse parts always belong in a user turn
+		for _, p := range parts {
+			if _, ok := p["functionResponse"]; ok {
+				geminiRole = "user"
+				break
+			}
+		}
+
+		if len(parts) > 0 {
+			rawContents = append(rawContents, map[string]any{
+				"role":  geminiRole,
+				"parts": parts,
+			})
+		}
 	}
 
-	if len(contents) == 0 {
-		contents = append(contents, map[string]any{
+	contents := normalizeGeminiContents(rawContents)
+
+	var systemInstruction map[string]any
+	if len(systemParts) > 0 {
+		systemInstruction = map[string]any{
 			"role":  "user",
-			"parts": []map[string]any{{"text": "ping"}},
-		})
+			"parts": systemParts,
+		}
 	}
 
-	return contents
+	return contents, systemInstruction
+}
+
+func sanitizeGeminiFunctionName(name string) string {
+	if name == "" {
+		return "_unknown"
+	}
+	var sb strings.Builder
+	for i, r := range name {
+		valid := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '.' || r == ':' || r == '-'
+		if !valid {
+			sb.WriteByte('_')
+			continue
+		}
+		if i == 0 && !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_') {
+			sb.WriteByte('_')
+		}
+		sb.WriteRune(r)
+	}
+	res := sb.String()
+	if len(res) > 64 {
+		res = res[:64]
+	}
+	return res
+}
+
+func extractText(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var sb strings.Builder
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				if t, ok := m["text"].(string); ok {
+					sb.WriteString(t)
+				}
+			}
+		}
+		return sb.String()
+	default:
+		return ""
+	}
+}
+
+func convertOpenAIContentToParts(content any) []map[string]any {
+	var parts []map[string]any
+	switch v := content.(type) {
+	case string:
+		if strings.TrimSpace(v) != "" {
+			parts = append(parts, map[string]any{"text": v})
+		}
+	case []any:
+		for _, item := range v {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			itemType, _ := m["type"].(string)
+			switch itemType {
+			case "text":
+				if text, ok := m["text"].(string); ok && strings.TrimSpace(text) != "" {
+					parts = append(parts, map[string]any{"text": text})
+				}
+			case "image_url":
+				if imgObj, ok := m["image_url"].(map[string]any); ok {
+					if urlStr, ok := imgObj["url"].(string); ok {
+						if strings.HasPrefix(urlStr, "data:") {
+							commaIdx := strings.Index(urlStr, ",")
+							if commaIdx != -1 {
+								mimePart := urlStr[5:commaIdx]
+								data := urlStr[commaIdx+1:]
+								mimeType := strings.Split(mimePart, ";")[0]
+								parts = append(parts, map[string]any{
+									"inlineData": map[string]any{
+										"mime_type": mimeType,
+										"data":      data,
+									},
+								})
+							}
+						} else if strings.HasPrefix(urlStr, "http://") || strings.HasPrefix(urlStr, "https://") {
+							parts = append(parts, map[string]any{
+								"fileData": map[string]any{
+									"fileUri":  urlStr,
+									"mimeType": "image/*",
+								},
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+	return parts
+}
+
+func extractParts(raw any) []map[string]any {
+	switch v := raw.(type) {
+	case []map[string]any:
+		return v
+	case []any:
+		var res []map[string]any
+		for _, item := range v {
+			if m, ok := item.(map[string]any); ok {
+				res = append(res, m)
+			}
+		}
+		return res
+	default:
+		return nil
+	}
+}
+
+// normalizeGeminiContents mirrors 9router normalizeGeminiContents:
+// merges adjacent same-role messages, strips empty parts,
+// and enforces initial user turn and terminal user turn (preventing 400 "Requests ending with a model turn are not supported").
+func normalizeGeminiContents(contents []map[string]any) []map[string]any {
+	var out []map[string]any
+
+	for _, c := range contents {
+		role, _ := c["role"].(string)
+		if role == "" {
+			continue
+		}
+		rawParts := extractParts(c["parts"])
+		var parts []map[string]any
+		for _, p := range rawParts {
+			if len(p) == 0 {
+				continue
+			}
+			// Strip thought-only parts
+			if isThought, _ := p["thought"].(bool); isThought && p["functionCall"] == nil {
+				continue
+			}
+			// Strip thoughtSignature-only parts without text or functionCall
+			if p["thoughtSignature"] != nil && p["functionCall"] == nil && p["text"] == nil {
+				continue
+			}
+			if t, ok := p["text"].(string); ok && strings.TrimSpace(t) == "" && len(p) == 1 {
+				continue
+			}
+			// Safety: move any thoughtSignature erroneously nested in functionCall to the part level
+			if fc, ok := p["functionCall"].(map[string]any); ok {
+				if sig, ok := fc["thoughtSignature"].(string); ok && sig != "" {
+					delete(fc, "thoughtSignature")
+					if p["thoughtSignature"] == nil {
+						p["thoughtSignature"] = sig
+					}
+				}
+			}
+			parts = append(parts, p)
+		}
+		if len(parts) == 0 {
+			continue
+		}
+
+		if len(out) > 0 && out[len(out)-1]["role"] == role {
+			lastParts := extractParts(out[len(out)-1]["parts"])
+			out[len(out)-1]["parts"] = append(lastParts, parts...)
+		} else {
+			out = append(out, map[string]any{
+				"role":  role,
+				"parts": parts,
+			})
+		}
+	}
+
+	// Initial turn guard: first turn must be user
+	if len(out) > 0 && out[0]["role"] != "user" {
+		out = append([]map[string]any{
+			{
+				"role":  "user",
+				"parts": []map[string]any{{"text": "..."}},
+			},
+		}, out...)
+	}
+
+	// Terminal turn guard: last turn cannot be model
+	if len(out) > 0 && out[len(out)-1]["role"] == "model" {
+		lastMsg := out[len(out)-1]
+		lastParts := extractParts(lastMsg["parts"])
+
+		var fnCalls []map[string]any
+		for _, p := range lastParts {
+			if fc, ok := p["functionCall"].(map[string]any); ok {
+				fnCalls = append(fnCalls, fc)
+			}
+		}
+
+		if len(fnCalls) > 0 {
+			responses := make([]map[string]any, 0, len(fnCalls))
+			for _, call := range fnCalls {
+				name, _ := call["name"].(string)
+				if name == "" {
+					name = "tool"
+				}
+				fr := map[string]any{
+					"name":     name,
+					"response": map[string]any{"result": "Continue."},
+				}
+				if id, ok := call["id"].(string); ok && id != "" {
+					fr["id"] = id
+				}
+				responses = append(responses, map[string]any{
+					"functionResponse": fr,
+				})
+			}
+			out = append(out, map[string]any{
+				"role":  "user",
+				"parts": responses,
+			})
+		} else {
+			out = append(out, map[string]any{
+				"role":  "user",
+				"parts": []map[string]any{{"text": "Continue."}},
+			})
+		}
+	}
+
+	if len(out) == 0 {
+		out = []map[string]any{
+			{
+				"role":  "user",
+				"parts": []map[string]any{{"text": "Hello"}},
+			},
+		}
+	}
+
+	return out
 }
 
 func (c *Client) fetchSubscriptionAndProject(ctx context.Context, accessToken string) (string, string) {

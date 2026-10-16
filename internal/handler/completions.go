@@ -978,6 +978,9 @@ func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool,
 	created := time.Now().Unix()
 
 	sentRole := false
+	toolCallIndex := 0
+	toolCallCount := 0
+	var pendingThoughtSignature string
 
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -1040,12 +1043,29 @@ func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool,
 								}
 							}
 
-							// 2. Text parts
+							// 2. Process parts
 							if content, ok := cand["content"].(map[string]any); ok {
 								if parts, ok := content["parts"].([]any); ok {
 									for _, pItem := range parts {
 										if pMap, ok := pItem.(map[string]any); ok {
-											if text, ok := pMap["text"].(string); ok && text != "" {
+											// Check thought signature
+											if sig, ok := pMap["thoughtSignature"].(string); ok && sig != "" {
+												pendingThoughtSignature = sig
+											} else if sig, ok := pMap["thought_signature"].(string); ok && sig != "" {
+												pendingThoughtSignature = sig
+											}
+
+											isThought, _ := pMap["thought"].(bool)
+											text, hasText := pMap["text"].(string)
+
+											// A. Text / Reasoning delta
+											if hasText && text != "" {
+												delta := map[string]any{}
+												if isThought {
+													delta["reasoning_content"] = text
+												} else {
+													delta["content"] = text
+												}
 												chunk, _ := json.Marshal(map[string]any{
 													"id":      streamID,
 													"object":  "chat.completion.chunk",
@@ -1054,8 +1074,54 @@ func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool,
 													"choices": []map[string]any{
 														{
 															"index": 0,
-															"delta": map[string]string{
-																"content": text,
+															"delta": delta,
+														},
+													},
+												})
+												_, _ = fmt.Fprintf(w, "data: %s\n\n", chunk)
+												if canFlush {
+													flusher.Flush()
+												}
+											}
+
+											// B. Function call (tool call)
+											if fc, ok := pMap["functionCall"].(map[string]any); ok {
+												fcName, _ := fc["name"].(string)
+												fcArgs, _ := fc["args"].(map[string]any)
+												if fcArgs == nil {
+													fcArgs = map[string]any{}
+												}
+												argsBytes, _ := json.Marshal(fcArgs)
+												callID, _ := fc["id"].(string)
+												if callID == "" {
+													callID = fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixMilli(), toolCallIndex)
+												}
+
+												if pendingThoughtSignature != "" {
+													antigravity.StoreThoughtSignature(callID, pendingThoughtSignature)
+													pendingThoughtSignature = ""
+												}
+
+												chunk, _ := json.Marshal(map[string]any{
+													"id":      streamID,
+													"object":  "chat.completion.chunk",
+													"created": created,
+													"model":   model,
+													"choices": []map[string]any{
+														{
+															"index": 0,
+															"delta": map[string]any{
+																"tool_calls": []map[string]any{
+																	{
+																		"index": toolCallIndex,
+																		"id":    callID,
+																		"type":  "function",
+																		"function": map[string]string{
+																			"name":      fcName,
+																			"arguments": string(argsBytes),
+																		},
+																	},
+																},
 															},
 														},
 													},
@@ -1064,6 +1130,8 @@ func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool,
 												if canFlush {
 													flusher.Flush()
 												}
+												toolCallIndex++
+												toolCallCount++
 											}
 										}
 									}
@@ -1073,6 +1141,10 @@ func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool,
 							// 3. Finish reason
 							finishReason, _ := cand["finishReason"].(string)
 							if finishReason != "" {
+								fr := "stop"
+								if toolCallCount > 0 {
+									fr = "tool_calls"
+								}
 								finishChunk, _ := json.Marshal(map[string]any{
 									"id":      streamID,
 									"object":  "chat.completion.chunk",
@@ -1082,7 +1154,7 @@ func streamAntigravityAsOpenAI(w io.Writer, flusher http.Flusher, canFlush bool,
 										{
 											"index":         0,
 											"delta":         map[string]string{},
-											"finish_reason": "stop",
+											"finish_reason": fr,
 										},
 									},
 								})
@@ -1128,20 +1200,64 @@ func handleAntigravityNonStreamResponse(w http.ResponseWriter, body io.Reader, m
 	(&usageEnvelope{}).applyAny(respMap["usageMetadata"], tk)
 
 	var fullText string
+	var reasoningText string
+	var toolCalls []map[string]any
+
 	if candidates, ok := respMap["candidates"].([]any); ok && len(candidates) > 0 {
 		if cand, ok := candidates[0].(map[string]any); ok {
 			if content, ok := cand["content"].(map[string]any); ok {
 				if parts, ok := content["parts"].([]any); ok {
-					for _, pItem := range parts {
+					for idx, pItem := range parts {
 						if pMap, ok := pItem.(map[string]any); ok {
+							isThought, _ := pMap["thought"].(bool)
 							if text, ok := pMap["text"].(string); ok {
-								fullText += text
+								if isThought {
+									reasoningText += text
+								} else {
+									fullText += text
+								}
+							}
+							if fc, ok := pMap["functionCall"].(map[string]any); ok {
+								fcName, _ := fc["name"].(string)
+								fcArgs, _ := fc["args"].(map[string]any)
+								if fcArgs == nil {
+									fcArgs = map[string]any{}
+								}
+								argsBytes, _ := json.Marshal(fcArgs)
+								callID, _ := fc["id"].(string)
+								if callID == "" {
+									callID = fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixMilli(), idx)
+								}
+								if sig, ok := pMap["thoughtSignature"].(string); ok && sig != "" {
+									antigravity.StoreThoughtSignature(callID, sig)
+								}
+								toolCalls = append(toolCalls, map[string]any{
+									"id":   callID,
+									"type": "function",
+									"function": map[string]string{
+										"name":      fcName,
+										"arguments": string(argsBytes),
+									},
+								})
 							}
 						}
 					}
 				}
 			}
 		}
+	}
+
+	messageObj := map[string]any{
+		"role":    "assistant",
+		"content": fullText,
+	}
+	if reasoningText != "" {
+		messageObj["reasoning_content"] = reasoningText
+	}
+	finishReason := "stop"
+	if len(toolCalls) > 0 {
+		messageObj["tool_calls"] = toolCalls
+		finishReason = "tool_calls"
 	}
 
 	openAIResp := map[string]any{
@@ -1151,12 +1267,9 @@ func handleAntigravityNonStreamResponse(w http.ResponseWriter, body io.Reader, m
 		"model":   model,
 		"choices": []map[string]any{
 			{
-				"index": 0,
-				"message": map[string]string{
-					"role":    "assistant",
-					"content": fullText,
-				},
-				"finish_reason": "stop",
+				"index":         0,
+				"message":       messageObj,
+				"finish_reason": finishReason,
 			},
 		},
 	}
