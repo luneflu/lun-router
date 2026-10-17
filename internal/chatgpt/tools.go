@@ -349,6 +349,24 @@ func callAlreadyMade(executed []ToolCall, call *ToolCall) bool {
 	return false
 }
 
+// SameToolCall reports whether two tool calls target the same tool and the same
+// path-like argument. It is the exported form of callAlreadyMade and exists so
+// other providers can reuse the dedup rule.
+func SameToolCall(prev, call *ToolCall) bool {
+	if prev == nil || call == nil {
+		return false
+	}
+	if !strings.EqualFold(prev.Name, call.Name) {
+		return false
+	}
+	target := toolCallTarget(call.Arguments)
+	prevTarget := toolCallTarget(prev.Arguments)
+	if target == "" || prevTarget == "" {
+		return true
+	}
+	return strings.EqualFold(prevTarget, target)
+}
+
 // writeIntentRe detects a request that asks for a file to be created or changed.
 var writeIntentRe = regexp.MustCompile(`(?i)\b(write|rewrite|update|edit|modify|change|create|add|append|insert|remove|delete|rename|fix|apply|patch)\b`)
 

@@ -19,19 +19,30 @@ import (
 	"lun-router/internal/ponytail"
 	"lun-router/internal/store"
 	"lun-router/internal/usage"
+	"lun-router/internal/zai"
 )
 
 func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
-	return NewRouterWithChatGPT(ks, ms, client, agClient, nil, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, staticFS...)
+	return NewRouterWithProviders(ks, ms, client, agClient, nil, nil, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, staticFS...)
 }
 
+// NewRouterWithChatGPT keeps the original two-provider signature working.
 func NewRouterWithChatGPT(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, cgClient *chatgpt.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
+	return NewRouterWithProviders(ks, ms, client, agClient, cgClient, nil, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, staticFS...)
+}
+
+// NewRouterWithProviders wires every provider, including z.ai.
+func NewRouterWithProviders(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, cgClient *chatgpt.Client, zaiClient *zai.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
+
 	mux := http.NewServeMux()
 
 	keyH := NewKeyHandler(ks)
 	compH := NewCompletionHandler(ks, ms, client, agClient, compactorSvc, cavemanSvc, ponytailSvc)
 	if cgClient != nil {
 		compH.SetChatGPT(cgClient)
+	}
+	if zaiClient != nil {
+		compH.SetZai(zaiClient)
 	}
 	compactH := NewCompactorHandler(compactorSvc)
 	usageH := NewUsageHandler(usageSvc)
@@ -95,6 +106,12 @@ func NewRouterWithChatGPT(ks *store.KeyStore, ms *store.ModelStore, client *open
 	mux.HandleFunc("POST /api/providers/chatgpt/cookies", compH.UploadChatGPTCookies)
 	mux.HandleFunc("DELETE /api/providers/chatgpt/cookies", compH.DeleteChatGPTCookies)
 	mux.HandleFunc("PUT /api/providers/chatgpt/tools", compH.UpdateChatGPTTools)
+	mux.HandleFunc("GET /api/providers/zai/models", compH.ZaiProviderModels)
+	mux.HandleFunc("PUT /api/providers/zai/models", compH.UpdateZaiProviderModels)
+	mux.HandleFunc("GET /api/providers/zai/status", compH.ZaiStatus)
+	mux.HandleFunc("PUT /api/providers/zai/status", compH.UpdateZaiStatus)
+	mux.HandleFunc("POST /api/providers/zai/install", compH.InstallZaiBrowser)
+	mux.HandleFunc("PUT /api/providers/zai/tools", compH.UpdateZaiTools)
 	mux.HandleFunc("POST /api/models/test", compH.TestModel)
 
 	// Antigravity Provider Routes (9router parity)

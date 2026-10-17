@@ -21,6 +21,7 @@ import (
 	"lun-router/internal/ponytail"
 	"lun-router/internal/store"
 	"lun-router/internal/usage"
+	"lun-router/internal/zai"
 )
 
 type CompletionHandler struct {
@@ -29,6 +30,7 @@ type CompletionHandler struct {
 	client           *opencode.Client
 	agClient         *antigravity.Client
 	cgClient         *chatgpt.Client
+	zaiClient        *zai.Client
 	compactorService *compactor.Service
 	cavemanService   *caveman.Service
 	ponytailService  *ponytail.Service
@@ -43,6 +45,11 @@ func (h *CompletionHandler) SetUsage(s *usage.Service) {
 // SetChatGPT attaches the ChatGPT provider client.
 func (h *CompletionHandler) SetChatGPT(c *chatgpt.Client) {
 	h.cgClient = c
+}
+
+// SetZai attaches the z.ai provider client.
+func (h *CompletionHandler) SetZai(c *zai.Client) {
+	h.zaiClient = c
 }
 
 func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service) *CompletionHandler {
@@ -68,6 +75,7 @@ const (
 	opencodePrefix    = "opencode/"
 	antigravityPrefix = "antigravity/"
 	chatgptPrefix     = "chatgpt/"
+	zaiPrefix         = "zai/"
 )
 
 // GET /v1/models (OpenAI-compatible catalog: returns only enabled models)
@@ -114,6 +122,22 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// z.ai models (only if enabled)
+	if h.zaiClient != nil && h.zaiClient.IsEnabled() {
+		for _, m := range h.zaiClient.GetCatalogModels() {
+			if h.modelStore == nil || !h.modelStore.IsDisabled("zai", m) {
+				item := ModelItem{
+					ID:      zaiPrefix + m,
+					Object:  "model",
+					OwnedBy: "zai",
+					Enabled: true,
+				}
+				model.EnrichModelItem(&item, "zai")
+				filtered = append(filtered, item)
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"object": "list",
@@ -140,6 +164,166 @@ func (h *CompletionHandler) ProviderModels(w http.ResponseWriter, r *http.Reques
 		"provider": "opencode",
 		"version":  version,
 		"models":   rawModels,
+	})
+}
+
+// GET /api/providers/zai/models (Provider view: returns all z.ai models with enabled status)
+func (h *CompletionHandler) ZaiProviderModels(w http.ResponseWriter, r *http.Request) {
+	var rawModels []ModelItem
+	if h.zaiClient != nil {
+		for _, m := range h.zaiClient.GetCatalogModels() {
+			item := ModelItem{
+				ID:      zaiPrefix + m,
+				Object:  "model",
+				OwnedBy: "zai",
+				Enabled: h.modelStore == nil || !h.modelStore.IsDisabled("zai", m),
+			}
+			model.EnrichModelItem(&item, "zai")
+			rawModels = append(rawModels, item)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"provider": "zai",
+		"enabled":  h.zaiClient != nil && h.zaiClient.IsEnabled(),
+		"models":   rawModels,
+	})
+}
+
+// GET /api/providers/zai/status (provider state, browser usage and install progress)
+func (h *CompletionHandler) ZaiStatus(w http.ResponseWriter, r *http.Request) {
+	if h.zaiClient == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"provider": "zai",
+			"enabled":  false,
+			"error":    "z.ai client not configured",
+		})
+		return
+	}
+
+	inst := h.zaiClient.Installer()
+	browserPath := ""
+	if exe := inst.DetectedExecutable(); exe != "" {
+		browserPath = exe
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"provider":          "zai",
+		"enabled":           h.zaiClient.IsEnabled(),
+		"installed":         inst.IsInstalled(),
+		"browser_path":      browserPath,
+		"install_state":     inst.GetStatus().State,
+		"install_progress":  inst.GetStatus().Progress,
+		"install_error":     inst.GetStatus().Error,
+		"browser_running":   h.zaiClient.BrowserRunning(),
+		"passthrough_tools": h.zaiClient.PassthroughTools(),
+		"guest_mode":        true,
+	})
+}
+
+// PUT /api/providers/zai/status (enable or disable the provider)
+func (h *CompletionHandler) UpdateZaiStatus(w http.ResponseWriter, r *http.Request) {
+	if h.zaiClient == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "z.ai client not configured"})
+		return
+	}
+	var payload struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		return
+	}
+	if payload.Enabled != nil {
+		if err := h.zaiClient.SetEnabled(*payload.Enabled); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		if *payload.Enabled {
+			// Launch the browser and mint one captcha token now so the first
+			// completion does not pay the cold start.
+			go h.zaiClient.WarmUp()
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"enabled":           h.zaiClient.IsEnabled(),
+		"installed":         h.zaiClient.Installer().IsInstalled(),
+		"passthrough_tools": h.zaiClient.PassthroughTools(),
+	})
+}
+
+// POST /api/providers/zai/install (download the browser used for captcha minting)
+func (h *CompletionHandler) InstallZaiBrowser(w http.ResponseWriter, r *http.Request) {
+	if h.zaiClient == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "z.ai client not configured"})
+		return
+	}
+	inst := h.zaiClient.Installer()
+	if inst.IsInstalled() {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "state": "already_installed"})
+		return
+	}
+	go func() {
+		if err := inst.StartInstall(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "[zai] browser install failed: %v\n", err)
+		}
+	}()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "state": inst.GetStatus().State})
+}
+
+// PUT /api/providers/zai/tools (toggle handing tool calls to the calling agent)
+func (h *CompletionHandler) UpdateZaiTools(w http.ResponseWriter, r *http.Request) {
+	if h.zaiClient == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "z.ai client not configured"})
+		return
+	}
+	var payload struct {
+		PassthroughTools *bool  `json:"passthrough_tools"`
+		BrowserPath      string `json:"browser_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		return
+	}
+	if payload.PassthroughTools != nil {
+		if err := h.zaiClient.SetPassthroughTools(*payload.PassthroughTools); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if payload.BrowserPath != "" {
+		if err := h.zaiClient.SetBrowserPath(payload.BrowserPath); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"passthrough_tools": h.zaiClient.PassthroughTools(),
 	})
 }
 
@@ -369,6 +553,52 @@ func (h *CompletionHandler) UpdateChatGPTStatus(w http.ResponseWriter, r *http.R
 }
 
 // PUT /api/providers/chatgpt/models (Toggle single or batch ChatGPT model enabled/disabled)
+// PUT /api/providers/zai/models (Toggle single or batch z.ai model enabled/disabled)
+func (h *CompletionHandler) UpdateZaiProviderModels(w http.ResponseWriter, r *http.Request) {
+	if h.modelStore == nil {
+		http.Error(w, `{"error":"Model store not configured"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var payload struct {
+		Model   string   `json:"model"`
+		Models  []string `json:"models"`
+		Enabled bool     `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		return
+	}
+
+	for i := range payload.Models {
+		payload.Models[i] = zai.CleanModelID(payload.Models[i])
+	}
+	payload.Model = zai.CleanModelID(payload.Model)
+
+	var err error
+	if len(payload.Models) > 0 {
+		err = h.modelStore.SetBatchDisabled("zai", payload.Models, !payload.Enabled)
+	} else if payload.Model != "" {
+		err = h.modelStore.SetDisabled("zai", payload.Model, !payload.Enabled)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Either model or models required"})
+		return
+	}
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "enabled": payload.Enabled})
+}
+
 func (h *CompletionHandler) UpdateChatGPTProviderModels(w http.ResponseWriter, r *http.Request) {
 	if h.modelStore == nil {
 		http.Error(w, `{"error":"Model store not configured"}`, http.StatusInternalServerError)
@@ -529,6 +759,7 @@ type ModelTestResult struct {
 	LatencyMs int64  `json:"latency_ms"`
 	Error     string `json:"error,omitempty"`
 	Status    int    `json:"status,omitempty"`
+	Response  string `json:"response,omitempty"`
 }
 
 type ModelTestPayload struct {
@@ -602,6 +833,64 @@ func (h *CompletionHandler) pingSingleModel(ctx context.Context, model string, p
 			OK:        true,
 			Model:     model,
 			LatencyMs: latencyMs,
+		}
+	}
+
+	// z.ai Model Test
+	if provider == "zai" || (provider == "" && h.isZaiModel(model)) {
+		cleanModel := zai.CleanModelID(bareModel)
+		if h.modelStore != nil && h.modelStore.IsDisabled("zai", cleanModel) {
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     fmt.Sprintf("Model '%s' is disabled for provider zai", model),
+				LatencyMs: 0,
+			}
+		}
+		if h.zaiClient == nil || !h.zaiClient.IsEnabled() {
+			return ModelTestResult{
+				OK:    false,
+				Model: model,
+				Error: "z.ai provider is not enabled",
+			}
+		}
+
+		mCtx, cancel := context.WithTimeout(ctx, 240*time.Second)
+		defer cancel()
+
+		start := time.Now()
+		testBody := map[string]any{
+			"model": cleanModel,
+			"messages": []map[string]string{
+				{"role": "user", "content": prompt},
+			},
+		}
+		upResp, err := h.zaiClient.ExecuteChat(mCtx, testBody, false)
+		latencyMs := time.Since(start).Milliseconds()
+		if err != nil {
+			return ModelTestResult{OK: false, Model: model, Error: err.Error(), LatencyMs: latencyMs}
+		}
+		defer upResp.Body.Close()
+
+		if upResp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(upResp.Body)
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     string(bodyBytes),
+				LatencyMs: latencyMs,
+				Status:    upResp.StatusCode,
+			}
+		}
+
+		// Surface the reply text so the UI can show what the model actually
+		// said, rather than only reporting that the call succeeded.
+		raw, _ := io.ReadAll(io.LimitReader(upResp.Body, 1<<20))
+		return ModelTestResult{
+			OK:        true,
+			Model:     model,
+			LatencyMs: latencyMs,
+			Response:  assistantTextFromResponse(raw),
 		}
 	}
 
@@ -842,6 +1131,14 @@ func antigravityShouldHandle(model string, opencodeModels []string) bool {
 		return false
 	}
 	return !containsModel(opencodeModels, clean)
+}
+
+// isZaiModel resolves whether a model belongs to the z.ai provider.
+func (h *CompletionHandler) isZaiModel(model string) bool {
+	if provider, _, ok := splitProviderPrefix(model); ok {
+		return provider == "zai"
+	}
+	return zai.IsCatalogModel(model)
 }
 
 // isChatGPTModel resolves whether a model belongs to the ChatGPT provider.
@@ -1132,6 +1429,81 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Check if this is a ChatGPT model
+	if modelProvider == "zai" || (modelProvider == "" && h.isZaiModel(model)) {
+		cleanModel := zai.CleanModelID(model)
+		if h.modelStore != nil && h.modelStore.IsDisabled("zai", cleanModel) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Model '%s' is disabled for provider zai", model),
+					"type":    "invalid_request_error",
+				},
+			})
+			return
+		}
+
+		if h.zaiClient == nil || !h.zaiClient.IsEnabled() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": "z.ai provider is not enabled. Enable it from the provider page.",
+					"type":    "api_error",
+				},
+			})
+			return
+		}
+
+		ev.Provider = "zai"
+		upResp, err := h.zaiClient.ExecuteChat(r.Context(), bodyMap, clientWantsStream)
+		if err != nil {
+			ev.Err = "upstream_error"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": err.Error(),
+					"type":    "api_error",
+				},
+			})
+			return
+		}
+		ev.UpMs = time.Since(reqStart).Milliseconds()
+		defer upResp.Body.Close()
+
+		if upResp.StatusCode != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(upResp.StatusCode)
+			bodyBytes, _ := io.ReadAll(upResp.Body)
+			_, _ = w.Write(bodyBytes)
+			return
+		}
+
+		if clientWantsStream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			flusher, canFlush := w.(http.Flusher)
+			scanner := bufio.NewScanner(upResp.Body)
+			scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+			for scanner.Scan() {
+				line := scanner.Bytes()
+				_, _ = w.Write(line)
+				_, _ = w.Write([]byte("\n"))
+				if canFlush {
+					flusher.Flush()
+				}
+			}
+			return
+		}
+
+		bodyBytes, _ := io.ReadAll(upResp.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(bodyBytes)
+		return
+	}
+
 	if modelProvider == "chatgpt" || (modelProvider == "" && h.isChatGPTModel(model)) {
 		cleanModel := chatgpt.CleanModelID(model)
 		if h.modelStore != nil && h.modelStore.IsDisabled("chatgpt", cleanModel) {
@@ -1731,4 +2103,25 @@ func handleAntigravityNonStreamResponse(w http.ResponseWriter, body io.Reader, m
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(openAIResp)
+}
+
+// assistantTextFromResponse pulls the assistant message content out of an
+// OpenAI-shaped completion body, tolerating both the streaming and
+// non-streaming renderings.
+func assistantTextFromResponse(raw []byte) string {
+	var body struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			Text string `json:"text"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || len(body.Choices) == 0 {
+		return ""
+	}
+	if body.Choices[0].Message.Content != "" {
+		return body.Choices[0].Message.Content
+	}
+	return body.Choices[0].Text
 }

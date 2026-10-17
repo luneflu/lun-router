@@ -202,3 +202,67 @@ export async function pingModelsBatch(
 	});
 	return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// z.ai (GLM) provider
+// ---------------------------------------------------------------------------
+
+export interface ZaiStatus {
+	provider?: string;
+	enabled: boolean;
+	installed?: boolean;
+	browser_path?: string;
+	install_state?: string;
+	install_progress?: number;
+	install_error?: string;
+	browser_running?: boolean;
+	passthrough_tools?: boolean;
+	guest_mode?: boolean;
+	error?: string;
+}
+
+export async function fetchZaiStatus(): Promise<ZaiStatus> {
+	const res = await fetch('/api/providers/zai/status');
+	if (!res.ok) {
+		throw new Error(`Failed to fetch z.ai status: ${res.statusText}`);
+	}
+	return res.json();
+}
+
+export async function updateZaiStatus(enabled: boolean): Promise<{ enabled: boolean }> {
+	const res = await fetch('/api/providers/zai/status', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ enabled })
+	});
+	if (!res.ok) {
+		const errData = await res.json().catch(() => ({}));
+		throw new Error(errData.error || `Failed to update z.ai status: ${res.statusText}`);
+	}
+	return res.json();
+}
+
+export async function installZaiBrowser(): Promise<{ ok: boolean; state?: string }> {
+	const res = await fetch('/api/providers/zai/install', { method: 'POST' });
+	if (!res.ok) {
+		const errData = await res.json().catch(() => ({}));
+		throw new Error(errData.error || `Failed to start browser install: ${res.statusText}`);
+	}
+	return res.json();
+}
+
+export async function updateZaiTools(payload: {
+	passthrough_tools?: boolean;
+	browser_path?: string;
+}): Promise<{ passthrough_tools: boolean }> {
+	const res = await fetch('/api/providers/zai/tools', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(payload)
+	});
+	if (!res.ok) {
+		const errData = await res.json().catch(() => ({}));
+		throw new Error(errData.error || `Failed to update z.ai tools: ${res.statusText}`);
+	}
+	return res.json();
+}

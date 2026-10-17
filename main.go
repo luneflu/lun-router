@@ -19,6 +19,7 @@ import (
 	"lun-router/internal/ponytail"
 	"lun-router/internal/store"
 	"lun-router/internal/usage"
+	"lun-router/internal/zai"
 )
 
 //go:embed all:build
@@ -101,7 +102,19 @@ func main() {
 		go cgClient.WarmUp()
 	}
 
-	router := handler.NewRouterWithChatGPT(ks, ms, client, agClient, cgClient, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, distFS)
+	zaiClient := zai.NewClient(zai.Config{
+		DataDir: dataDir,
+	})
+	defer zaiClient.Close()
+
+	// z.ai needs a browser only to mint Aliyun captcha tokens, which are
+	// single-use; warming up now means the first completion does not pay the
+	// ~7s launch.
+	if zaiClient.IsEnabled() {
+		go zaiClient.WarmUp()
+	}
+
+	router := handler.NewRouterWithProviders(ks, ms, client, agClient, cgClient, zaiClient, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, distFS)
 
 	log.Printf("Lun Router Go backend running on :%s (opencode version: %s, data dir: %s)", port, vm.GetVersion(), dataDir)
 	if err := http.ListenAndServe(":"+port, router); err != nil {

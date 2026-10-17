@@ -526,6 +526,66 @@ func matchesPattern(pattern, candidate string) bool {
 	return false
 }
 
+// zaiCapabilities maps the z.ai catalog onto router capabilities. Every
+// advertised z.ai model supports native tool use through the provider's prompt
+// protocol, and all but the vision-only ones expose reasoning.
+func zaiCapabilities(modelID string) (ModelCapabilities, bool) {
+	table := map[string]ModelCapabilities{
+		"x-preview-l": {
+			Tools: true, Reasoning: true, ThinkingCanDisable: true, Vision: true,
+			ThinkingFormat: "openai", ThinkingLevels: []string{"low", "medium", "max"},
+			ContextWindow: 200000, MaxOutput: 128000,
+		},
+		"glm-5.3": {
+			Tools: true, Reasoning: true, ThinkingCanDisable: true,
+			ThinkingFormat: "openai", ThinkingLevels: []string{"low", "medium", "max"},
+			ContextWindow: 200000, MaxOutput: 128000,
+		},
+		"glm-5.2": {
+			Tools: true, Reasoning: true, ThinkingCanDisable: true,
+			ThinkingFormat: "openai", ThinkingLevels: []string{"low", "medium", "max"},
+			ContextWindow: 200000, MaxOutput: 64064,
+		},
+		"GLM-5-Turbo": {
+			Tools: true, Reasoning: true, ThinkingCanDisable: true,
+			ThinkingFormat: "openai", ThinkingLevels: []string{"low", "medium", "max"},
+			ContextWindow: 200000, MaxOutput: 32000,
+		},
+		"glm-4.7": {
+			Tools: true, Reasoning: true, ThinkingCanDisable: true,
+			ThinkingFormat: "openai", ThinkingLevels: []string{"low", "medium", "max"},
+			ContextWindow: 200000, MaxOutput: 40000,
+		},
+		"GLM-5v-Turbo": {
+			Tools: true, Reasoning: true, ThinkingCanDisable: true, Vision: true,
+			ThinkingFormat: "openai", ThinkingLevels: []string{"low", "medium", "max"},
+			ContextWindow: 200000, MaxOutput: 32000,
+		},
+		"GLM-4.1V-Thinking-FlashX": {
+			Tools: true, Reasoning: true, ThinkingCanDisable: true, Vision: true,
+			ThinkingFormat: "openai", ThinkingLevels: []string{"low", "medium", "max"},
+			ContextWindow: 128000, MaxOutput: 16000,
+		},
+		"0727-106B-API": {
+			Tools: true, Reasoning: true, ThinkingCanDisable: true,
+			ThinkingFormat: "openai", ThinkingLevels: []string{"low", "medium", "max"},
+			ContextWindow: 128000, MaxOutput: 80000,
+		},
+		"0727-360B-API": {
+			Tools: true, Reasoning: true, ThinkingCanDisable: true,
+			ThinkingFormat: "openai", ThinkingLevels: []string{"low", "medium", "max"},
+			ContextWindow: 128000, MaxOutput: 80000,
+		},
+		"0808-360B-DR": {
+			Tools: true, Reasoning: true, ThinkingCanDisable: true,
+			ThinkingFormat: "openai", ThinkingLevels: []string{"low", "medium", "max"},
+			ContextWindow: 128000, MaxOutput: 32000,
+		},
+	}
+	caps, ok := table[modelID]
+	return caps, ok
+}
+
 // ResolveCapabilities determines model capabilities based on provider and model ID.
 func ResolveCapabilities(provider, modelID string) ModelCapabilities {
 	baseID := strings.TrimSpace(modelID)
@@ -534,6 +594,12 @@ func ResolveCapabilities(provider, modelID string) ModelCapabilities {
 	// Strip thinking suffix like "model(high)" if present
 	if idx := strings.LastIndex(baseID, "("); idx != -1 && strings.HasSuffix(baseID, ")") {
 		baseID = strings.TrimSpace(baseID[:idx])
+	}
+
+	if provider == "zai" {
+		if caps, ok := zaiCapabilities(baseID); ok {
+			return caps
+		}
 	}
 
 	for _, rule := range patternRules {
