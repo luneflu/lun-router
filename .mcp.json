@@ -1,8 +1,12 @@
 {
 	"mcpServers": {
-		"heroui-react": {
+		"svelte": {
 			"command": "pnx",
-			"args": ["-y", "@heroui/react-mcp@latest"]
+			"args": ["@sveltejs/mcp"]
+		},
+		"shadcn-svelte": {
+			"command": "pnx",
+			"args": ["shadcn-svelte-mcp"]
 		}
 	}
 }
