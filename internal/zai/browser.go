@@ -138,6 +138,17 @@ func (b *browser) openPageTarget(ctx context.Context) string {
 	return t.WebSocketDebuggerURL
 }
 
+// pid reports the root process id of the launched browser, or 0 when it is not
+// running.
+func (b *browser) pid() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.cmd == nil || b.cmd.Process == nil {
+		return 0
+	}
+	return b.cmd.Process.Pid
+}
+
 func (b *browser) dial(ctx context.Context) error {
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	conn, _, err := dialer.DialContext(ctx, b.pageWS, nil)

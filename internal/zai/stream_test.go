@@ -173,3 +173,52 @@ func TestParamPoolDropsStaleEntries(t *testing.T) {
 // timeNowMinus exists so the pool test can express a stale timestamp without
 // importing time at the call site.
 func timeNowMinus(d time.Duration) time.Time { return time.Now().Add(-d) }
+
+// TestDecoderTrailingEditIsContinuation pins a live bug. The service streams the
+// answer as deltas and then sends a trailing edit whose index is occasionally
+// computed from a slightly older snapshot, landing a couple of characters short
+// of the end. Applying that as a replacement drops text: a request for
+// "ALPHA_BRAVO_CHARLIE" came back as "ALPHA_BVO_CHARLIE" because the edit sat two
+// characters before the end of the buffer.
+//
+// The numbers mirror the captured run: buffer 59 chars, edit index 57.
+func TestDecoderTrailingEditIsContinuation(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"type":"chat:completion","data":{"delta_content":"<details type=\"reasoning\" done=\"false\">X","phase":"thinking"}}`,
+		`data: {"type":"chat:completion","data":{"edit_index":32,"edit_content":"true\">X</details>\nAL","phase":"answer"}}`,
+		`data: {"type":"chat:completion","data":{"delta_content":"PHA_BRA","phase":"answer"}}`,
+		`data: {"type":"chat:completion","data":{"phase":"other"}}`,
+		`data: {"type":"chat:completion","data":{"edit_index":57,"edit_content":"VO_CHARLIE","phase":"other"}}`,
+		`data: {"type":"chat:completion","data":{"phase":"done","done":true}}`,
+		`data: [DONE]`,
+	}, "\n")
+
+	dec, err := readStream(strings.NewReader(body), nil)
+	if err != nil {
+		t.Fatalf("readStream: %v", err)
+	}
+	answer, _ := dec.Answer()
+	if answer != "ALPHA_BRAVO_CHARLIE" {
+		t.Errorf("answer = %q, want %q (a stale trailing index must append, not truncate)", answer, "ALPHA_BRAVO_CHARLIE")
+	}
+}
+
+// TestDecoderMidBufferEditStillReplaces guards the other side of the tolerance.
+// An edit replaces from its index to the end of the buffer, so its content
+// carries the remainder; a genuine revision far from the end must still
+// overwrite rather than append.
+func TestDecoderMidBufferEditStillReplaces(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"type":"chat:completion","data":{"delta_content":"AAAAxxxxBBBB","phase":"thinking"}}`,
+		`data: {"type":"chat:completion","data":{"edit_index":4,"edit_content":"yyyyBBBB","phase":"answer"}}`,
+		`data: {"type":"chat:completion","data":{"phase":"done","done":true}}`,
+	}, "\n")
+
+	dec, _ := readStream(strings.NewReader(body), nil)
+	// Assert the buffer itself: Answer() reports only the answer-phase slice, and
+	// what is under test here is that the edit overwrote the middle rather than
+	// being appended.
+	if dec.buf != "AAAAyyyyBBBB" {
+		t.Errorf("buffer = %q, want %q", dec.buf, "AAAAyyyyBBBB")
+	}
+}

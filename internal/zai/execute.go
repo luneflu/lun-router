@@ -49,9 +49,22 @@ func (c *Client) ExecuteChat(reqCtx context.Context, body map[string]any, stream
 		return nil, err
 	}
 
-	// A rejected captcha token is the one upstream failure worth retrying: the
-	// token is single-use, so a fresh one is all that is needed.
+	// A rejected captcha token is recoverable directly: the token is single-use,
+	// so minting a fresh one is all that is needed.
 	if res.Err != "" && isCaptchaError(res.Err) {
+		if retry, retryErr := c.sendTurn(ctx, model.ID, transcript, "", think, effort); retryErr == nil {
+			res = retry
+		}
+	}
+
+	// Throttling is reported as a non-SSE block page. Rotating the device identity
+	// clears a device-level block; it does not clear an IP-level one, so the
+	// attempt is rate-limited rather than repeated on every request.
+	if res.Blocked && c.shouldRotateOnBlock() {
+		if debugEnabled() {
+			fmt.Fprintf(os.Stderr, "[zai] blocked upstream (%d); rotating device identity\n", res.Status)
+		}
+		c.ResetSession()
 		if retry, retryErr := c.sendTurn(ctx, model.ID, transcript, "", think, effort); retryErr == nil {
 			res = retry
 		}

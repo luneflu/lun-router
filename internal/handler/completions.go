@@ -209,6 +209,8 @@ func (h *CompletionHandler) ZaiStatus(w http.ResponseWriter, r *http.Request) {
 		browserPath = exe
 	}
 
+	mem := h.zaiClient.GetMemoryUsage()
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"provider":          "zai",
@@ -219,6 +221,9 @@ func (h *CompletionHandler) ZaiStatus(w http.ResponseWriter, r *http.Request) {
 		"install_progress":  inst.GetStatus().Progress,
 		"install_error":     inst.GetStatus().Error,
 		"browser_running":   h.zaiClient.BrowserRunning(),
+		"browser_pid":       mem.PID,
+		"browser_procs":     mem.ProcessNum,
+		"browser_rss_mb":    mem.TotalRSSMB,
 		"passthrough_tools": h.zaiClient.PassthroughTools(),
 		"guest_mode":        true,
 	})

@@ -71,8 +71,32 @@ type Client struct {
 
 	pool paramPool
 
+	// blockMu guards lastBlockRotate, which throttles identity rotation while
+	// the upstream is blocking this client.
+	blockMu         sync.Mutex
+	lastBlockRotate time.Time
+
+	// turnMu paces outgoing turns. The endpoint sits behind an Aliyun (ESA) WAF
+	// that blocks bursts: ~100 requests in a few minutes got this client cut off
+	// with an edge-generated 405, and replaying a previously-successful captured
+	// request verbatim was still refused. Pacing is the cheap way to stay a
+	// well-behaved client.
+	turnMu      sync.Mutex
+	lastTurnEnd time.Time
+
 	reqID int64
 }
+
+// blockCooldown stops the throttle-recovery path from thrashing. The block was
+// measured to be IP-level: rotating the device identity and retrying still
+// returned 405, and it persisted minutes later. Since relaunching the browser per
+// request buys nothing while the block holds, recovery is attempted at most once
+// per this interval.
+const blockCooldown = 3 * time.Minute
+
+// minTurnGap is the minimum spacing between upstream turns. The captcha mint is
+// already serialized through the browser, so this only stops bursts.
+const minTurnGap = 1200 * time.Millisecond
 
 // NewClient builds a client and loads persisted config.
 func NewClient(cfg Config) *Client {
@@ -196,6 +220,50 @@ func (c *Client) GetCatalogModels() []string {
 	return out
 }
 
+// ResetSession discards the browser, its profile and the cached credentials so
+// the next mint runs as a new device.
+//
+// The service throttles per device, so a fresh profile yields a new _arms_uid and
+// a new guest token. It does NOT clear an IP-level block - that was measured to
+// survive rotation - so callers gate this with shouldRotateOnBlock.
+func (c *Client) ResetSession() {
+	c.browserMu.Lock()
+	c.dropBrowserLocked()
+	c.browserMu.Unlock()
+
+	c.credsMu.Lock()
+	c.creds = Credentials{}
+	c.credsMu.Unlock()
+
+	c.pool.reset()
+}
+
+// than an anonymous guest. Only guest sessions are implemented today, so this is
+// false until account tokens are supported.
+// paceTurn blocks until at least minTurnGap has elapsed since the previous turn
+// finished, so a retrying client cannot hammer the endpoint into blocking it.
+func (c *Client) paceTurn() {
+	c.turnMu.Lock()
+	defer c.turnMu.Unlock()
+	if wait := minTurnGap - time.Since(c.lastTurnEnd); wait > 0 {
+		time.Sleep(wait)
+	}
+	c.lastTurnEnd = time.Now()
+}
+
+// shouldRotateOnBlock reports whether an upstream block warrants another identity
+// rotation, and records the attempt. Without it a blocked client would relaunch
+// the browser on every request and never make progress.
+func (c *Client) shouldRotateOnBlock() bool {
+	c.blockMu.Lock()
+	defer c.blockMu.Unlock()
+	if time.Since(c.lastBlockRotate) < blockCooldown {
+		return false
+	}
+	c.lastBlockRotate = time.Now()
+	return true
+}
+
 // SignedIn reports whether the cached session is an authenticated account rather
 // than an anonymous guest. Only guest sessions are implemented today, so this is
 // false until account tokens are supported.
@@ -228,6 +296,21 @@ func (c *Client) BrowserRunning() bool {
 	c.browserMu.Lock()
 	defer c.browserMu.Unlock()
 	return c.browserAliveLocked()
+}
+
+// GetMemoryUsage reports live RSS metrics for the browser process tree.
+//
+// The browser is launched lazily and only for captcha minting, so an idle
+// provider legitimately reports nothing running.
+func (c *Client) GetMemoryUsage() chatgpt.MemoryUsage {
+	c.browserMu.Lock()
+	b := c.browser
+	c.browserMu.Unlock()
+
+	if b == nil {
+		return chatgpt.MemoryUsage{Running: false}
+	}
+	return chatgpt.ProcessTreeUsage(b.pid())
 }
 
 // WarmUp mints one captcha param and pools it so the first real request is not
@@ -376,10 +459,15 @@ type completionResult struct {
 	Usage     json.RawMessage
 	Err       string
 	Status    int
+	// Blocked marks a reply that was not SSE at all, which is how the service
+	// signals throttling. It is separated from Err because it is recoverable by
+	// rotating the device identity.
+	Blocked bool
 }
 
 // sendTurn performs one upstream turn and folds the SSE stream.
 func (c *Client) sendTurn(ctx context.Context, model, prompt, captcha string, think bool, effort string) (completionResult, error) {
+	c.paceTurn()
 	creds, err := c.credentials(ctx)
 	if err != nil {
 		return completionResult{}, err
@@ -471,9 +559,55 @@ func (c *Client) sendTurn(ctx context.Context, model, prompt, captcha string, th
 		res.Err = upstreamErrorMessage(raw)
 	}
 	if res.Err == "" && res.Text == "" {
-		res.Err = "upstream returned an empty reply"
+		res.Err = describeEmptyReply(resp.StatusCode, dec)
+		// A non-SSE body is a throttle, not a model failure.
+		res.Blocked = dec.buf == "" && dec.rawSnippet != ""
 	}
 	return res, nil
+}
+
+// describeEmptyReply explains a reply that carried no usable content. A non-200
+// status usually means throttling, and the service signals that with an HTML
+// page rather than a JSON error, so the status and a body snippet are reported
+// instead of a bare "empty reply".
+func describeEmptyReply(status int, dec *decoder) string {
+	if dec.buf != "" {
+		// Content arrived, but nothing survived as a visible answer: the model's
+		// reasoning block was never closed, so there is no reply to return.
+		return "upstream produced reasoning but no answer"
+	}
+	switch {
+	case status >= 500:
+		return fmt.Sprintf("upstream returned %d with no content", status)
+	case status == http.StatusTooManyRequests:
+		return "upstream rate-limited this client (429). Wait before retrying."
+	case status != http.StatusOK:
+		msg := fmt.Sprintf("upstream returned %d with no SSE content", status)
+		if dec.rawSnippet != "" {
+			msg += ": " + summarizeHTML(dec.rawSnippet)
+		}
+		return msg
+	case dec.rawSnippet != "":
+		return "upstream replied without SSE: " + summarizeHTML(dec.rawSnippet)
+	default:
+		return "upstream returned an empty reply"
+	}
+}
+
+// summarizeHTML strips a non-SSE body down to something readable. A throttle page
+// is HTML, and dumping its markup into an error message helps nobody.
+func summarizeHTML(snippet string) string {
+	s := strings.TrimSpace(snippet)
+	if strings.HasPrefix(strings.ToLower(s), "<!doctype") || strings.HasPrefix(strings.ToLower(s), "<html") {
+		if start := strings.Index(s, "<title>"); start != -1 {
+			if end := strings.Index(s[start:], "</title>"); end != -1 {
+				title := s[start+len("<title>") : start+end]
+				return fmt.Sprintf("an HTML block page (title %q) - the service is throttling this client", title)
+			}
+		}
+		return "an HTML block page - the service is throttling this client"
+	}
+	return truncateRaw(s, 160)
 }
 
 // upstreamErrorMessage renders the service's error payload compactly.

@@ -6,19 +6,19 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { zaiState } from '$lib/state/zai.svelte';
 	import { toast } from '$lib/state/toast.svelte';
+	import { cn } from '$lib/utils';
 	import ModelTestChat from './model-test-chat.svelte';
 	import type { ProviderModel } from '$lib/types';
 
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import DownloadIcon from '@lucide/svelte/icons/download';
+	import ShieldIcon from '@lucide/svelte/icons/shield';
 	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
+	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import WrenchIcon from '@lucide/svelte/icons/wrench';
-	import GaugeIcon from '@lucide/svelte/icons/gauge';
 
 	let selectedModel = $state('zai/x-preview-l');
 
-	// Mirrors internal/zai/models.go Catalog: only models that can drive a tool
-	// loop are advertised, because the rest cannot support an agent client.
 	const rawModels: {
 		id: string;
 		name: string;
@@ -30,10 +30,6 @@
 	}[] = [
 		{ id: 'zai/x-preview-l', name: 'GLM-5.3-Flash', desc: 'Lightweight flagship — fastest, vision capable', ctx: 200000, out: 128000, vision: true, guest: true },
 		{ id: 'zai/glm-4.7', name: 'GLM-4.7', desc: 'Stable general model with agent mode', ctx: 200000, out: 40000, guest: true },
-		// These exist in the catalog and are agent-capable, but an anonymous
-		// session gets 403 "Model not available for current user level" for
-		// every one of them, so they are listed as unavailable rather than
-		// offered as working choices.
 		{ id: 'zai/glm-5.3', name: 'GLM-5.3', desc: 'Current flagship — needs a signed-in account', ctx: 200000, out: 128000 },
 		{ id: 'zai/glm-5.2', name: 'GLM-5.2', desc: 'Previous flagship — needs a signed-in account', ctx: 200000, out: 64064 },
 		{ id: 'zai/GLM-5-Turbo', name: 'GLM-5-Turbo', desc: 'Speed-optimised — needs a signed-in account', ctx: 200000, out: 32000 },
@@ -69,6 +65,7 @@
 		zaiState.load().then(() => {
 			if (zaiState.enabled) zaiState.startStatusPolling();
 		});
+		zaiState.startRamPolling();
 	});
 
 	onDestroy(() => {
@@ -107,97 +104,167 @@
 	}
 </script>
 
-<div class="space-y-4">
-	<Card.Root>
-		<Card.Header class="pb-2">
-			<Card.Title class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-				<SparklesIcon class="h-4 w-4" />
-				z.ai (GLM)
-			</Card.Title>
-			<Card.Description class="pt-1 text-xs">
-				Chat traffic goes straight over HTTPS. A browser is used for one thing only — minting the
-				Aliyun captcha token, which is single-use and cannot be computed without running Aliyun's
-				device-signing SDK.
-			</Card.Description>
-		</Card.Header>
-		<Card.Content class="space-y-4">
-			<div class="flex items-center justify-between">
-				<div class="space-y-0.5">
-					<div class="text-sm font-medium">Enable provider</div>
-					<div class="text-xs text-muted-foreground">
-						Exposes {rawModels.length} GLM models under <code>zai/</code>.
-					</div>
+<div class="space-y-6">
+	<!-- Header -->
+	<div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+		<div>
+			<div class="flex items-center gap-2.5">
+				<div class="flex size-9 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-primary">
+					<SparklesIcon class="size-5" />
 				</div>
+				<div>
+					<h1 class="text-xl font-bold tracking-tight">z.ai (GLM)</h1>
+					<p class="text-xs text-muted-foreground">
+						Direct HTTPS completion with headless browser captcha minting
+					</p>
+				</div>
+			</div>
+		</div>
+
+		<div class="flex items-center gap-3">
+			<Badge variant={zaiState.enabled ? 'default' : 'secondary'} class="gap-1.5 px-2.5 py-1 text-xs">
+				<span class={cn('size-1.5 rounded-full', zaiState.enabled ? 'bg-primary-foreground' : 'bg-muted-foreground')}></span>
+				{zaiState.enabled ? 'Enabled' : 'Disabled'}
+			</Badge>
+
+			<div class="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5">
+				<span class="text-xs font-medium">Provider:</span>
 				<Switch
 					checked={zaiState.enabled}
-					disabled={zaiState.toggling || zaiState.loading}
+					disabled={zaiState.toggling || zaiState.installing}
 					onCheckedChange={handleToggleMain}
 				/>
 			</div>
+		</div>
+	</div>
 
-			<div class="flex flex-wrap items-center gap-2">
-				<Badge variant={zaiState.enabled ? 'default' : 'secondary'}>
-					{zaiState.enabled ? 'Enabled' : 'Disabled'}
-				</Badge>
-				<Badge variant={zaiState.installed ? 'default' : 'secondary'}>
-					{zaiState.installed ? 'Browser installed' : 'Browser missing'}
-				</Badge>
-				<Badge variant={zaiState.browserRunning ? 'default' : 'secondary'}>
-					{zaiState.browserRunning ? 'Browser running' : 'Browser idle'}
-				</Badge>
-				<Badge variant="outline">
-					<ShieldCheckIcon class="mr-1 h-3 w-3" />
-					Guest session
-				</Badge>
-			</div>
-
-			{@const state = zaiState.installState}
-			{#if state === 'downloading' || state === 'extracting'}
-				<div class="space-y-1">
-					<div class="flex justify-between text-xs text-muted-foreground">
-						<span>{state === 'downloading' ? 'Downloading browser' : 'Extracting'}</span>
-						<span>{zaiState.installProgress}%</span>
-					</div>
-					<div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-						<div class="h-full bg-primary transition-all" style="width: {zaiState.installProgress}%"></div>
-					</div>
+	<!-- Status Grid: 3 columns like ChatGPT -->
+	<div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+		<!-- Browser Status Card -->
+		<Card.Root>
+			<Card.Header class="pb-2">
+				<Card.Title class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+					<ShieldIcon class="size-4" />
+					Stealth Browser
+				</Card.Title>
+			</Card.Header>
+			<Card.Content>
+				<div class="flex items-baseline justify-between">
+					<span class="text-xl font-bold">
+						{zaiState.installed ? 'Installed' : 'Not Installed'}
+					</span>
+					<Badge variant={zaiState.installed ? 'outline' : 'destructive'} class="text-xs">
+						{zaiState.installed ? 'Ready' : 'Download Needed'}
+					</Badge>
 				</div>
-			{:else if !zaiState.installed}
-				<Button size="sm" onclick={handleInstall} disabled={zaiState.installing}>
-					<DownloadIcon class="mr-2 h-4 w-4" />
-					{zaiState.installing ? 'Starting…' : 'Install browser'}
-				</Button>
-			{/if}
-
-			{#if zaiState.installError}
-				<p class="text-xs text-destructive">{zaiState.installError}</p>
-			{/if}
-			{#if zaiState.error}
-				<p class="text-xs text-destructive">{zaiState.error}</p>
-			{/if}
-
-			{#if zaiState.browserPath}
-				<p class="text-[11px] break-all text-muted-foreground">
-					Executable: <code>{zaiState.browserPath}</code>
+				<p class="mt-1 truncate text-xs text-muted-foreground">
+					{zaiState.browserPath || 'No browser binary detected'}
 				</p>
-			{/if}
-		</Card.Content>
-	</Card.Root>
 
+				{#if !zaiState.installed && !zaiState.installing}
+					<Button
+						variant="outline"
+						size="sm"
+						class="mt-3 w-full gap-1.5 text-xs"
+						onclick={handleInstall}
+					>
+						<DownloadIcon class="size-3.5" />
+						Download Stealth Browser (~150 MB)
+					</Button>
+				{/if}
+
+				{#if zaiState.installState === 'downloading' || zaiState.installState === 'extracting'}
+					<div class="mt-3 space-y-1">
+						<div class="flex justify-between text-xs text-muted-foreground">
+							<span>{zaiState.installState === 'downloading' ? 'Downloading' : 'Extracting'}</span>
+							<span>{zaiState.installProgress}%</span>
+						</div>
+						<div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+							<div class="h-full bg-primary transition-all" style="width: {zaiState.installProgress}%"></div>
+						</div>
+					</div>
+				{/if}
+			</Card.Content>
+		</Card.Root>
+
+		<!-- Session / Auth Card -->
+		<Card.Root>
+			<Card.Header class="pb-2 flex flex-row items-center justify-between space-y-0">
+				<Card.Title class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+					<ShieldCheckIcon class="size-4" />
+					Session Mode
+				</Card.Title>
+			</Card.Header>
+			<Card.Content>
+				<div class="flex items-baseline justify-between">
+					<span class="text-xl font-bold">
+						{zaiState.guestMode ? 'Anonymous' : 'Authenticated'}
+					</span>
+					<Badge variant="outline" class="text-xs">
+						{zaiState.guestMode ? 'Guest Token' : 'Account'}
+					</Badge>
+				</div>
+				<p class="mt-1 text-xs text-muted-foreground">
+					Auto-refreshed guest JWT. 2 of 10 models unlocked.
+				</p>
+			</Card.Content>
+		</Card.Root>
+
+		<!-- Live Browser RAM Usage Card -->
+		<Card.Root>
+			<Card.Header class="pb-2 flex flex-row items-center justify-between space-y-0">
+				<Card.Title class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+					<ActivityIcon class="size-4" />
+					Live Browser RAM
+				</Card.Title>
+				<Badge variant="outline" class="gap-1 px-1.5 py-0 text-[10px] text-muted-foreground font-mono">
+					<span class="size-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+					2s Live
+				</Badge>
+			</Card.Header>
+			<Card.Content>
+				<div class="flex items-baseline justify-between">
+					<div class="text-xl font-bold">
+						{#if zaiState.browserRunning && zaiState.browserRssMb > 0}
+							{zaiState.browserRssMb.toFixed(1)} MB
+						{:else if zaiState.enabled}
+							0.0 MB <span class="text-xs font-normal text-muted-foreground">(Idle)</span>
+						{:else}
+							0.0 MB <span class="text-xs font-normal text-muted-foreground">(Stopped)</span>
+						{/if}
+					</div>
+					<Badge variant={zaiState.browserRunning ? 'default' : 'outline'} class="text-xs font-mono">
+						{#if zaiState.browserRunning}
+							{zaiState.browserProcs} procs (PID {zaiState.browserPid})
+						{:else}
+							0 procs
+						{/if}
+					</Badge>
+				</div>
+				<p class="mt-1 text-xs text-muted-foreground">
+					Summed resident memory (RSS). Browser launches on demand to mint captcha.
+				</p>
+			</Card.Content>
+		</Card.Root>
+	</div>
+
+	<!-- Tool Access Card -->
 	<Card.Root>
 		<Card.Header class="pb-2">
 			<Card.Title class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-				<WrenchIcon class="h-4 w-4" />
+				<WrenchIcon class="size-4" />
 				Tool Routing
 			</Card.Title>
+			<Card.Description class="pt-1 text-xs">
+				z.ai does not take a tools array over HTTP. The router emulates tools via prompt protocol and converts responses to OpenAI tool_calls.
+			</Card.Description>
 		</Card.Header>
 		<Card.Content class="space-y-3">
-			<div class="flex items-center justify-between">
-				<div class="space-y-0.5">
+			<div class="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 p-3">
+				<div class="min-w-0 pe-3">
 					<div class="text-sm font-medium">Hand tool calls to the agent</div>
 					<div class="text-xs text-muted-foreground">
-						Returns the model's tool call to your client so it runs in its own sandbox. Off means the
-						router executes tools itself.
+						Return tool calls to your agent client. Off executes tools router-side.
 					</div>
 				</div>
 				<Switch
@@ -205,36 +272,6 @@
 					onCheckedChange={handlePassthrough}
 				/>
 			</div>
-			<p class="text-[11px] text-muted-foreground">
-				z.ai takes no <code>tools</code> field — sending one fails upstream. Tool use runs through a
-				prompt protocol that GLM follows reliably; the router parses the call and returns standard
-				OpenAI <code>tool_calls</code>.
-			</p>
-		</Card.Content>
-	</Card.Root>
-
-	<Card.Root>
-		<Card.Header class="pb-2">
-			<Card.Title class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
-				<GaugeIcon class="h-4 w-4" />
-				Model Notes
-			</Card.Title>
-		</Card.Header>
-		<Card.Content class="space-y-2 text-xs text-muted-foreground">
-			<p>
-				Verified against a live anonymous token: only <code>zai/x-preview-l</code> and
-				<code>zai/glm-4.7</code> answer. The other eight return
-				<code>403 Model not available for current user level</code>, so the router does not advertise
-				them — supplying a signed-in token would unlock the rest.
-			</p>
-			<p>
-				Tool calls are verified end to end: a read/call round trip returns a real answer built from the
-				file contents rather than a guess.
-			</p>
-			<p>
-				Reasoning is a separate stream phase and is returned as <code>reasoning_content</code>. The
-				router maps <code>reasoning_effort</code> onto low / medium / max.
-			</p>
 		</Card.Content>
 	</Card.Root>
 

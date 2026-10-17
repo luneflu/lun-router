@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -57,12 +58,29 @@ type decoder struct {
 	errRaw   json.RawMessage
 	done     bool
 	thinking bool
+	// rawSnippet holds the first non-SSE line seen, so a non-SSE failure body is
+	// reported rather than swallowed.
+	rawSnippet string
 	// answerStart is the buffer offset at which the visible answer began. It is
 	// needed because the service streams reasoning and answer into one text run
 	// when it does not wrap the reasoning in a <details> block.
 	answerStart int
 	answerSet   bool
 }
+
+// editAppendTolerance compensates for an upstream quirk on trailing edits.
+//
+// The service streams answer text as deltas and then sends a final edit whose
+// index is *sometimes* computed from a slightly older snapshot, landing a couple
+// of characters before the end of the text it has already sent. Applying that as
+// a replacement silently drops those characters - observed live, where
+// "ALPHA_BRAVO_CHARLIE" arrived as "ALPHA_BVO_CHARLIE" because the edit sat two
+// characters short of the buffer end.
+//
+// An edit landing within this many characters of the end is therefore treated as
+// a continuation and appended. Genuine revisions (the <details> rewrite) sit
+// hundreds of characters from the end, so they are unaffected.
+const editAppendTolerance = 4
 
 func (d *decoder) apply(f streamFrame) {
 	if raw := f.frameError(); raw != nil {
@@ -87,9 +105,9 @@ func (d *decoder) apply(f streamFrame) {
 		if idx < 0 {
 			idx = 0
 		}
-		if idx > len(d.buf) {
-			// The service should never reference past the end of what it has
-			// already sent; if it does, prefer appending to dropping text.
+		if idx >= len(d.buf)-editAppendTolerance {
+			// Append: either the index points past the end, or it is a
+			// continuation whose index drifted. Truncating here loses text.
 			d.buf += f.Data.EditContent
 			break
 		}
@@ -146,6 +164,15 @@ func SplitReasoning(full string) (answer, reasoning string) {
 	return strings.TrimSpace(full[closeAt:]), strings.TrimSpace(full[start:closeAt])
 }
 
+// truncateRaw keeps debug output bounded.
+func truncateRaw(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > n {
+		return s[:n] + "..."
+	}
+	return s
+}
+
 // readStream consumes an SSE body, invoking onAnswer whenever the visible
 // answer grows. onAnswer receives the full answer so far, so callers can emit
 // deltas for streaming clients or ignore it entirely.
@@ -158,6 +185,12 @@ func readStream(r io.Reader, onAnswer func(string)) (*decoder, error) {
 	for sc.Scan() {
 		line := sc.Text()
 		if !strings.HasPrefix(line, "data:") {
+			// The service normally answers with SSE, but a throttle or WAF block
+			// arrives as an HTML page. Keep a snippet so the failure is reported
+			// as what it is instead of an opaque "empty reply".
+			if t := strings.TrimSpace(line); t != "" && d.rawSnippet == "" {
+				d.rawSnippet = truncateRaw(t, 200)
+			}
 			continue
 		}
 		payload := strings.TrimSpace(line[len("data:"):])
@@ -169,8 +202,12 @@ func readStream(r io.Reader, onAnswer func(string)) (*decoder, error) {
 			continue
 		}
 		if debugEnabled() {
-			fmt.Fprintf(os.Stderr, "[zai-frame] phase=%s delta=%.60q edit_idx=%v edit=%.80q\n",
-				f.Data.Phase, f.Data.DeltaContent, f.Data.EditIndex, f.Data.EditContent)
+			idx := "-"
+			if f.Data.EditIndex != nil {
+				idx = strconv.Itoa(*f.Data.EditIndex)
+			}
+			fmt.Fprintf(os.Stderr, "[zai-frame] bufLen=%d phase=%s idx=%s delta=%q edit=%q\n",
+				len(d.buf), f.Data.Phase, idx, f.Data.DeltaContent, f.Data.EditContent)
 		}
 		d.apply(f)
 

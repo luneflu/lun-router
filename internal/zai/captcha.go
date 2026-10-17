@@ -312,6 +312,13 @@ func (p *paramPool) put(item captchaParam) {
 	p.mu.Unlock()
 }
 
+// reset drops every pooled param, used when the device identity is rotated.
+func (p *paramPool) reset() {
+	p.mu.Lock()
+	p.items = nil
+	p.mu.Unlock()
+}
+
 func (p *paramPool) size() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()

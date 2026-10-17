@@ -18,6 +18,9 @@ export class ZaiState {
 	installed = $state(false);
 	browserPath = $state<string | undefined>(undefined);
 	browserRunning = $state(false);
+	browserPid = $state<number | undefined>(undefined);
+	browserProcs = $state(0);
+	browserRssMb = $state(0);
 	installState = $state<string>('idle');
 	installProgress = $state<number>(0);
 	installError = $state<string | undefined>(undefined);
@@ -30,12 +33,16 @@ export class ZaiState {
 
 	private pollInterval: ReturnType<typeof setInterval> | null = null;
 	private statusInterval: ReturnType<typeof setInterval> | null = null;
+	private ramInterval: ReturnType<typeof setInterval> | null = null;
 
 	#apply(data: ZaiStatus) {
 		this.enabled = data.enabled;
 		this.installed = data.installed ?? false;
 		this.browserPath = data.browser_path;
 		this.browserRunning = data.browser_running ?? false;
+		this.browserPid = data.browser_pid;
+		this.browserProcs = data.browser_procs ?? 0;
+		this.browserRssMb = data.browser_rss_mb ?? 0;
 		this.installState = data.install_state ?? 'idle';
 		this.installProgress = data.install_progress ?? 0;
 		this.installError = data.install_error;
@@ -52,6 +59,33 @@ export class ZaiState {
 				/* transient; keep the last known state */
 			}
 		}, 3000);
+	}
+
+	/**
+	 * Polls browser metrics every 2 seconds while the page is mounted. The browser
+	 * is only launched to mint captcha tokens, so RSS is legitimately zero until
+	 * the first request or warm-up.
+	 */
+	startRamPolling() {
+		if (this.ramInterval) return;
+		this.ramInterval = setInterval(async () => {
+			try {
+				const data = await fetchZaiStatus();
+				this.browserRunning = data.browser_running ?? false;
+				this.browserPid = data.browser_pid;
+				this.browserProcs = data.browser_procs ?? 0;
+				this.browserRssMb = data.browser_rss_mb ?? 0;
+			} catch (_) {
+				/* transient; keep the last known state */
+			}
+		}, 2000);
+	}
+
+	stopRamPolling() {
+		if (this.ramInterval) {
+			clearInterval(this.ramInterval);
+			this.ramInterval = null;
+		}
 	}
 
 	stopStatusPolling() {
@@ -142,6 +176,7 @@ export class ZaiState {
 
 	destroy() {
 		this.stopStatusPolling();
+		this.stopRamPolling();
 		if (this.pollInterval) {
 			clearInterval(this.pollInterval);
 			this.pollInterval = null;

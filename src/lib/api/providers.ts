@@ -216,6 +216,9 @@ export interface ZaiStatus {
 	install_progress?: number;
 	install_error?: string;
 	browser_running?: boolean;
+	browser_pid?: number;
+	browser_procs?: number;
+	browser_rss_mb?: number;
 	passthrough_tools?: boolean;
 	guest_mode?: boolean;
 	error?: string;
