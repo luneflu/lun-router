@@ -47,4 +47,3 @@ type AccountUsage struct {
 	Quotas    map[string]QuotaItem `json:"quotas"`
 	FetchedAt time.Time            `json:"fetchedAt"`
 }
-

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -94,7 +95,22 @@ type Client struct {
 	modelsMu   sync.RWMutex
 	models     []string
 	modelsFile string
+
+	// quotaRefreshMu guards quotaRefreshing so at most one background balance
+	// refresh runs at a time.
+	quotaRefreshMu  sync.Mutex
+	quotaRefreshing bool
 }
+
+// quotaSyncInterval is how often account balances are refreshed in the
+// background. Selection reads only the cache, so this loop is what keeps credit
+// ranking meaningful without putting a network call on the request path.
+const quotaSyncInterval = 4 * time.Minute
+
+// creditTieEpsilon is the balance difference, in percentage points, at which two
+// accounts count as equal. Equal accounts rotate instead of one absorbing every
+// request.
+const creditTieEpsilon = 0.5
 
 // defaultCallbackURL is the redirect URI used when the caller names none. It must
 // stay on loopback: the Antigravity client ID belongs to Antigravity itself, and
@@ -431,30 +447,224 @@ func (c *Client) MarkExhausted(accountID, model string, resetAt time.Time) {
 	}
 }
 
+// creditCandidate pairs an eligible account with its remaining credit.
+type creditCandidate struct {
+	acc   *Account
+	score float64
+	// known is false when no balance has been cached for the account yet.
+	known bool
+}
+
+// GetActiveForModel picks the eligible account with the most remaining credit.
+//
+// Ranking prefers, in order: the quota bucket for the exact model, then the
+// family's 5h session bucket (the one that actually gates requests), then the
+// family's weekly bucket, then the scarcest bucket the account reports. Accounts
+// whose balances tie rotate, so equal accounts share load rather than the first
+// one taking every request.
+//
+// Selection never blocks on the network. With no cached balances it degrades to
+// plain rotation and asks for a background refresh, so the next request can rank.
 func (c *Client) GetActiveForModel(model string) (*Account, bool) {
 	active := c.store.ListActive()
 	if len(active) == 0 {
 		return nil, false
 	}
 
+	cleanModel := CleanModelID(model)
+	fam := GetModelFamily(cleanModel)
+
 	c.quotaMu.RLock()
-	var available []*Account
+	candidates := make([]creditCandidate, 0, len(active))
 	for _, acc := range active {
-		if !c.isExhaustedLocked(acc.ID, model) {
-			available = append(available, acc)
+		if c.isExhaustedLocked(acc.ID, model) {
+			continue
 		}
+		score, known := c.creditsLocked(acc.ID, cleanModel, fam)
+		candidates = append(candidates, creditCandidate{acc: acc, score: score, known: known})
 	}
 	c.quotaMu.RUnlock()
 
-	if len(available) > 0 {
-		c.store.mu.Lock()
-		c.store.rotIndex = (c.store.rotIndex + 1) % len(available)
-		chosen := *available[c.store.rotIndex]
-		c.store.mu.Unlock()
-		return &chosen, true
+	// Sort by account id so rotation is driven by the cursor rather than by Go's
+	// randomised map iteration order. Without this the "rotate" step picks a
+	// random account instead of alternating, and load lands unevenly.
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].acc.ID < candidates[j].acc.ID })
+
+	if len(candidates) == 0 {
+		// Every account is exhausted for this model. Fall back to the plain
+		// store so the caller still gets an account and the upstream error is
+		// surfaced rather than masked as "no accounts".
+		return c.store.GetActive()
 	}
 
-	return c.store.GetActive()
+	pool := candidates
+	if best, ok := topScore(candidates); ok {
+		pool = tiedAt(candidates, best)
+	} else {
+		// Nothing cached yet: rotate and warm the cache for next time.
+		c.requestQuotaRefresh()
+	}
+
+	return c.rotate(pool), true
+}
+
+// topScore returns the highest known balance and whether any candidate had one.
+func topScore(cands []creditCandidate) (float64, bool) {
+	best := 0.0
+	found := false
+	for _, cd := range cands {
+		if !cd.known {
+			continue
+		}
+		if !found || cd.score > best {
+			best = cd.score
+			found = true
+		}
+	}
+	return best, found
+}
+
+// tiedAt narrows a pool to the candidates whose balance matches the best, so the
+// rotation spreads load across equally-funded accounts.
+func tiedAt(cands []creditCandidate, best float64) []creditCandidate {
+	out := make([]creditCandidate, 0, len(cands))
+	for _, cd := range cands {
+		if cd.known && math.Abs(cd.score-best) < creditTieEpsilon {
+			out = append(out, cd)
+		}
+	}
+	if len(out) == 0 {
+		return cands
+	}
+	return out
+}
+
+// rotate advances the shared rotation cursor inside pool and returns the chosen
+// account. Holding the cursor on the store keeps one rotation order across
+// model families.
+func (c *Client) rotate(pool []creditCandidate) *Account {
+	c.store.mu.Lock()
+	c.store.rotIndex = (c.store.rotIndex + 1) % len(pool)
+	acc := *pool[c.store.rotIndex].acc
+	c.store.mu.Unlock()
+	return &acc
+}
+
+// creditsLocked reports how much credit accountID has left for a model, and
+// whether any balance was known. Callers must hold quotaMu.
+func (c *Client) creditsLocked(accountID, cleanModel, fam string) (float64, bool) {
+	usage := c.quotaCache[accountID]
+	if usage == nil || len(usage.Quotas) == 0 {
+		return 0, false
+	}
+
+	// The exact model bucket is the most precise signal for this request.
+	if q, ok := usage.Quotas[cleanModel]; ok {
+		return remainingOf(q), true
+	}
+	if fam != "" {
+		// The 5h session bucket is what actually gates requests; the weekly
+		// bucket is the wider backstop when no session bucket is reported.
+		if q, ok := usage.Quotas[fam+"_session"]; ok {
+			return remainingOf(q), true
+		}
+		if q, ok := usage.Quotas[fam+"_weekly"]; ok {
+			return remainingOf(q), true
+		}
+	}
+
+	// The model-to-bucket mapping is unknown here, so score the account by its
+	// scarcest reported bucket - the conservative estimate of its headroom.
+	best := math.Inf(1)
+	found := false
+	for _, q := range usage.Quotas {
+		if q.Unlimited {
+			continue
+		}
+		if q.RemainingPercentage < best {
+			best = q.RemainingPercentage
+		}
+		found = true
+	}
+	if !found {
+		// Every bucket reports unlimited.
+		return 100, true
+	}
+	return best, true
+}
+
+// remainingOf normalises a bucket to a remaining percentage. An unlimited bucket
+// outranks any finite balance.
+func remainingOf(q QuotaItem) float64 {
+	if q.Unlimited {
+		return 100
+	}
+	return q.RemainingPercentage
+}
+
+// StartQuotaSync keeps per-account balances warm so selection can rank accounts
+// by remaining credit instead of rotating blindly.
+func (c *Client) StartQuotaSync(ctx context.Context) {
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
+		c.refreshAllQuotas(ctx)
+
+		ticker := time.NewTicker(quotaSyncInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.refreshAllQuotas(ctx)
+			}
+		}
+	}()
+}
+
+// refreshAllQuotas refetches balances for every active account. GetAccountUsage
+// serves its own short-lived cache, so repeated calls stay cheap.
+func (c *Client) refreshAllQuotas(ctx context.Context) {
+	for _, acc := range c.store.ListActive() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if _, err := c.GetAccountUsage(callCtx, acc, false); err != nil {
+			log.Printf("[Antigravity] quota refresh for %s failed: %v", acc.Email, err)
+		}
+		cancel()
+	}
+}
+
+// requestQuotaRefresh warms balances off the request path, at most one refresh in
+// flight at a time. It is what makes the first request after boot rank on the
+// second call rather than never.
+func (c *Client) requestQuotaRefresh() {
+	c.quotaRefreshMu.Lock()
+	if c.quotaRefreshing {
+		c.quotaRefreshMu.Unlock()
+		return
+	}
+	c.quotaRefreshing = true
+	c.quotaRefreshMu.Unlock()
+
+	go func() {
+		defer func() {
+			c.quotaRefreshMu.Lock()
+			c.quotaRefreshing = false
+			c.quotaRefreshMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		c.refreshAllQuotas(ctx)
+	}()
 }
 
 func (c *Client) BuildAuthURL(redirectURI, state string) string {

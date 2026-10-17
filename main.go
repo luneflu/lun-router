@@ -52,6 +52,9 @@ func main() {
 	}
 	agClient := antigravity.NewClient(agStore, dataDir)
 	agClient.StartBackgroundSync(context.Background())
+	// Keep account balances warm so request routing can pick the account with
+	// the most remaining credit instead of rotating blindly.
+	agClient.StartQuotaSync(context.Background())
 
 	compactorSvc, err := compactor.NewService(dataDir)
 	if err != nil {
