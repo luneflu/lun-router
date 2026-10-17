@@ -10,6 +10,7 @@
 	import { antigravityState } from '$lib/state/antigravity.svelte';
 	import { compactorState } from '$lib/state/compactor.svelte';
 	import { ponytailState } from '$lib/state/ponytail.svelte';
+	import { chatgptState } from '$lib/state/chatgpt.svelte';
 	import Sidebar from '$lib/components/sidebar/sidebar.svelte';
 	import Navbar from '$lib/components/navbar/navbar.svelte';
 	import * as Alert from '$lib/components/ui/alert';
@@ -23,16 +24,18 @@
 
 	let mobileMenuOpen = $state(false);
 
-	const activeView = $derived<'home' | 'usage' | 'opencode' | 'antigravity' | 'token-saver'>(
-		page.url.pathname.startsWith('/antigravity')
-			? 'antigravity'
-			: page.url.pathname.startsWith('/opencode')
-				? 'opencode'
-				: page.url.pathname.startsWith('/token-saver')
-					? 'token-saver'
-					: page.url.pathname.startsWith('/usage')
-						? 'usage'
-						: 'home'
+	const activeView = $derived<'home' | 'usage' | 'opencode' | 'antigravity' | 'chatgpt' | 'token-saver'>(
+		page.url.pathname.startsWith('/chatgpt')
+			? 'chatgpt'
+			: page.url.pathname.startsWith('/antigravity')
+				? 'antigravity'
+				: page.url.pathname.startsWith('/opencode')
+					? 'opencode'
+					: page.url.pathname.startsWith('/token-saver')
+						? 'token-saver'
+						: page.url.pathname.startsWith('/usage')
+							? 'usage'
+							: 'home'
 	);
 
 	function loadData() {
@@ -41,6 +44,7 @@
 		antigravityState.load();
 		compactorState.load();
 		ponytailState.load();
+		chatgptState.load();
 	}
 
 	onMount(async () => {

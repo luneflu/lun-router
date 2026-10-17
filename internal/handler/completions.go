@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"lun-router/internal/antigravity"
 	"lun-router/internal/caveman"
+	"lun-router/internal/chatgpt"
 	"lun-router/internal/compactor"
 	"lun-router/internal/model"
 	"lun-router/internal/opencode"
@@ -26,6 +28,7 @@ type CompletionHandler struct {
 	modelStore       *store.ModelStore
 	client           *opencode.Client
 	agClient         *antigravity.Client
+	cgClient         *chatgpt.Client
 	compactorService *compactor.Service
 	cavemanService   *caveman.Service
 	ponytailService  *ponytail.Service
@@ -35,6 +38,11 @@ type CompletionHandler struct {
 // SetUsage attaches the usage monitor. Optional: nil records nothing.
 func (h *CompletionHandler) SetUsage(s *usage.Service) {
 	h.usage = s
+}
+
+// SetChatGPT attaches the ChatGPT provider client.
+func (h *CompletionHandler) SetChatGPT(c *chatgpt.Client) {
+	h.cgClient = c
 }
 
 func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service) *CompletionHandler {
@@ -59,6 +67,7 @@ type ModelCapabilities = model.ModelCapabilities
 const (
 	opencodePrefix    = "opencode/"
 	antigravityPrefix = "antigravity/"
+	chatgptPrefix     = "chatgpt/"
 )
 
 // GET /v1/models (OpenAI-compatible catalog: returns only enabled models)
@@ -84,6 +93,22 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 					Enabled: true,
 				}
 				model.EnrichModelItem(&item, "antigravity")
+				filtered = append(filtered, item)
+			}
+		}
+	}
+
+	// ChatGPT models (only if enabled)
+	if h.cgClient != nil && h.cgClient.IsEnabled() {
+		for _, m := range h.cgClient.GetCatalogModels() {
+			if h.modelStore == nil || !h.modelStore.IsDisabled("chatgpt", m) {
+				item := ModelItem{
+					ID:      chatgptPrefix + m,
+					Object:  "model",
+					OwnedBy: "chatgpt",
+					Enabled: true,
+				}
+				model.EnrichModelItem(&item, "chatgpt")
 				filtered = append(filtered, item)
 			}
 		}
@@ -115,6 +140,282 @@ func (h *CompletionHandler) ProviderModels(w http.ResponseWriter, r *http.Reques
 		"provider": "opencode",
 		"version":  version,
 		"models":   rawModels,
+	})
+}
+
+// GET /api/providers/chatgpt/models (Provider view: returns all ChatGPT models with enabled status)
+func (h *CompletionHandler) ChatGPTProviderModels(w http.ResponseWriter, r *http.Request) {
+	var rawModels []ModelItem
+	if h.cgClient != nil {
+		for _, m := range h.cgClient.GetCatalogModels() {
+			item := ModelItem{
+				ID:      chatgptPrefix + m,
+				Object:  "model",
+				OwnedBy: "chatgpt",
+				Enabled: h.modelStore == nil || !h.modelStore.IsDisabled("chatgpt", m),
+			}
+			model.EnrichModelItem(&item, "chatgpt")
+			rawModels = append(rawModels, item)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"provider": "chatgpt",
+		"enabled":  h.cgClient != nil && h.cgClient.IsEnabled(),
+		"models":   rawModels,
+	})
+}
+
+// GET /api/providers/chatgpt/status (Returns provider enabled, browser installed, and install progress)
+func (h *CompletionHandler) ChatGPTStatus(w http.ResponseWriter, r *http.Request) {
+	if h.cgClient == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"enabled":   false,
+			"installed": false,
+		})
+		return
+	}
+
+	inst := h.cgClient.Installer()
+	status := inst.GetStatus()
+	execPath := inst.DetectedExecutable()
+	installed := execPath != ""
+	mem := h.cgClient.GetMemoryUsage()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"enabled":           h.cgClient.IsEnabled(),
+		"installed":         installed,
+		"has_cookies":       h.cgClient.HasCookies(),
+		"browser_path":      execPath,
+		"install_state":     status.State,
+		"install_progress":  status.Progress,
+		"install_error":     status.Error,
+		"browser_running":   mem.Running,
+		"browser_pid":       mem.PID,
+		"browser_procs":     mem.ProcessNum,
+		"browser_rss_mb":    mem.TotalRSSMB,
+		"shell_enabled":     h.cgClient.ShellEnabled(),
+		"work_dir":          h.cgClient.ToolWorkdirPublic(),
+		"passthrough_tools": h.cgClient.PassthroughTools(),
+	})
+}
+
+// PUT /api/providers/chatgpt/tools (Toggle local tool execution settings)
+func (h *CompletionHandler) UpdateChatGPTTools(w http.ResponseWriter, r *http.Request) {
+	if h.cgClient == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "ChatGPT client not configured"})
+		return
+	}
+
+	var payload struct {
+		ShellEnabled     *bool   `json:"shell_enabled"`
+		WorkDir          *string `json:"work_dir"`
+		PassthroughTools *bool   `json:"passthrough_tools"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		return
+	}
+
+	if payload.ShellEnabled != nil {
+		if err := h.cgClient.SetShellEnabled(*payload.ShellEnabled); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if payload.WorkDir != nil {
+		if err := h.cgClient.SetWorkDir(*payload.WorkDir); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if payload.PassthroughTools != nil {
+		if err := h.cgClient.SetPassthroughTools(*payload.PassthroughTools); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":                true,
+		"shell_enabled":     h.cgClient.ShellEnabled(),
+		"work_dir":          h.cgClient.ToolWorkdirPublic(),
+		"passthrough_tools": h.cgClient.PassthroughTools(),
+	})
+}
+
+// POST /api/providers/chatgpt/cookies (Upload cookies JSON)
+func (h *CompletionHandler) UploadChatGPTCookies(w http.ResponseWriter, r *http.Request) {
+	if h.cgClient == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "ChatGPT client not configured"})
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Failed to read request body"})
+		return
+	}
+
+	if err := h.cgClient.SaveCookies(body); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":          true,
+		"has_cookies": true,
+	})
+}
+
+// DELETE /api/providers/chatgpt/cookies (Clear uploaded cookies)
+func (h *CompletionHandler) DeleteChatGPTCookies(w http.ResponseWriter, r *http.Request) {
+	if h.cgClient == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "ChatGPT client not configured"})
+		return
+	}
+
+	if err := h.cgClient.ClearCookies(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":          true,
+		"has_cookies": false,
+	})
+}
+
+// POST /api/providers/chatgpt/install (Starts downloading and extracting CloakBrowser)
+func (h *CompletionHandler) InstallChatGPTBrowser(w http.ResponseWriter, r *http.Request) {
+	if h.cgClient == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "ChatGPT client not configured"})
+		return
+	}
+
+	if err := h.cgClient.Installer().StartInstall(r.Context()); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"message": "Installation started",
+	})
+}
+
+// PUT /api/providers/chatgpt/status (Toggle ChatGPT Web provider enabled/disabled)
+func (h *CompletionHandler) UpdateChatGPTStatus(w http.ResponseWriter, r *http.Request) {
+	if h.cgClient == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "ChatGPT client not configured"})
+		return
+	}
+
+	var payload struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		return
+	}
+
+	if err := h.cgClient.SetEnabled(payload.Enabled); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"enabled": h.cgClient.IsEnabled(),
+	})
+}
+
+// PUT /api/providers/chatgpt/models (Toggle single or batch ChatGPT model enabled/disabled)
+func (h *CompletionHandler) UpdateChatGPTProviderModels(w http.ResponseWriter, r *http.Request) {
+	if h.modelStore == nil {
+		http.Error(w, `{"error":"Model store not configured"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var payload struct {
+		Model   string   `json:"model"`
+		Models  []string `json:"models"`
+		Enabled bool     `json:"enabled"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON body"})
+		return
+	}
+
+	for i := range payload.Models {
+		payload.Models[i] = chatgpt.CleanModelID(payload.Models[i])
+	}
+	payload.Model = chatgpt.CleanModelID(payload.Model)
+
+	var err error
+	if len(payload.Models) > 0 {
+		err = h.modelStore.SetBatchDisabled("chatgpt", payload.Models, !payload.Enabled)
+	} else if payload.Model != "" {
+		err = h.modelStore.SetDisabled("chatgpt", payload.Model, !payload.Enabled)
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Either model or models required"})
+		return
+	}
+
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"enabled": payload.Enabled,
 	})
 }
 
@@ -275,6 +576,67 @@ func (h *CompletionHandler) pingSingleModel(ctx context.Context, model string, p
 		}
 
 		upResp, err := h.agClient.ExecuteChat(mCtx, testBody, false)
+		latencyMs := time.Since(start).Milliseconds()
+		if err != nil {
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     err.Error(),
+				LatencyMs: latencyMs,
+			}
+		}
+		defer upResp.Body.Close()
+
+		if upResp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(upResp.Body)
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     string(bodyBytes),
+				LatencyMs: latencyMs,
+				Status:    upResp.StatusCode,
+			}
+		}
+
+		return ModelTestResult{
+			OK:        true,
+			Model:     model,
+			LatencyMs: latencyMs,
+		}
+	}
+
+	// ChatGPT Model Test
+	if provider == "chatgpt" || (provider == "" && h.isChatGPTModel(model)) {
+		cleanModel := chatgpt.CleanModelID(bareModel)
+		if h.modelStore != nil && h.modelStore.IsDisabled("chatgpt", cleanModel) {
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     fmt.Sprintf("Model '%s' is disabled for provider chatgpt", model),
+				LatencyMs: 0,
+			}
+		}
+
+		if h.cgClient == nil {
+			return ModelTestResult{
+				OK:    false,
+				Model: model,
+				Error: "ChatGPT provider not initialized (browser not available)",
+			}
+		}
+
+		mCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+
+		start := time.Now()
+		testBody := map[string]any{
+			"model": cleanModel,
+			"messages": []map[string]string{
+				{"role": "user", "content": prompt},
+			},
+		}
+
+		upResp, err := h.cgClient.ExecuteChat(mCtx, testBody, false)
 		latencyMs := time.Since(start).Milliseconds()
 		if err != nil {
 			return ModelTestResult{
@@ -482,6 +844,14 @@ func antigravityShouldHandle(model string, opencodeModels []string) bool {
 	return !containsModel(opencodeModels, clean)
 }
 
+// isChatGPTModel resolves whether a model belongs to the ChatGPT provider.
+func (h *CompletionHandler) isChatGPTModel(model string) bool {
+	if provider, _, ok := splitProviderPrefix(model); ok {
+		return provider == "chatgpt"
+	}
+	return chatgpt.IsCatalogModel(model)
+}
+
 // splitProviderPrefix resolves an explicit provider namespace. ok is false for a
 // bare ID, which keeps catalog-based routing.
 func splitProviderPrefix(model string) (provider, id string, ok bool) {
@@ -490,6 +860,8 @@ func splitProviderPrefix(model string) (provider, id string, ok bool) {
 		return "opencode", strings.TrimPrefix(model, opencodePrefix), true
 	case antigravity.HasAntigravityPrefix(model):
 		return "antigravity", antigravity.CleanModelID(model), true
+	case strings.HasPrefix(model, chatgptPrefix):
+		return "chatgpt", strings.TrimPrefix(model, chatgptPrefix), true
 	default:
 		return "", model, false
 	}
@@ -611,6 +983,12 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 	model, _ := bodyMap["model"].(string)
 	if model == "" {
 		model = "big-pickle"
+	}
+
+	if os.Getenv("CHATGPT_DEBUG_BODY") == "1" {
+		if dbg, err := json.MarshalIndent(bodyMap, "", "  "); err == nil {
+			fmt.Fprintf(os.Stderr, "[chatgpt-debug] request model=%s body:\n%s\n", model, string(dbg))
+		}
 	}
 	requestedModel := model
 	modelProvider, bareModel, prefixed := splitProviderPrefix(model)
@@ -750,6 +1128,80 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 
 		handleAntigravityNonStreamResponse(w, upResp.Body, model, tokens)
+		return
+	}
+
+	// Check if this is a ChatGPT model
+	if modelProvider == "chatgpt" || (modelProvider == "" && h.isChatGPTModel(model)) {
+		cleanModel := chatgpt.CleanModelID(model)
+		if h.modelStore != nil && h.modelStore.IsDisabled("chatgpt", cleanModel) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Model '%s' is disabled for provider chatgpt", model),
+					"type":    "invalid_request_error",
+				},
+			})
+			return
+		}
+
+		if h.cgClient == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": "ChatGPT provider not initialized (browser not available)",
+					"type":    "api_error",
+				},
+			})
+			return
+		}
+
+		ev.Provider = "chatgpt"
+		upResp, err := h.cgClient.ExecuteChat(r.Context(), bodyMap, clientWantsStream)
+		if err != nil {
+			ev.Err = "upstream_error"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Upstream ChatGPT error: %v", err),
+					"type":    "api_error",
+				},
+			})
+			return
+		}
+		ev.UpMs = time.Since(reqStart).Milliseconds()
+		defer upResp.Body.Close()
+
+		if upResp.StatusCode != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(upResp.StatusCode)
+			bodyBytes, _ := io.ReadAll(upResp.Body)
+			_, _ = w.Write(bodyBytes)
+			return
+		}
+
+		if clientWantsStream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			flusher, canFlush := w.(http.Flusher)
+			scanner := bufio.NewScanner(upResp.Body)
+			for scanner.Scan() {
+				line := scanner.Bytes()
+				_, _ = w.Write(line)
+				_, _ = w.Write([]byte("\n"))
+				if canFlush {
+					flusher.Flush()
+				}
+			}
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.Copy(w, upResp.Body)
 		return
 	}
 

@@ -12,6 +12,7 @@ import (
 	"lun-router/internal/antigravity"
 	"lun-router/internal/auth"
 	"lun-router/internal/caveman"
+	"lun-router/internal/chatgpt"
 	"lun-router/internal/compactor"
 	"lun-router/internal/handler"
 	"lun-router/internal/opencode"
@@ -89,7 +90,18 @@ func main() {
 		log.Fatalf("Failed to initialize usage service: %v", err)
 	}
 
-	router := handler.NewRouter(ks, ms, client, agClient, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, distFS)
+	cgClient := chatgpt.NewClient(chatgpt.Config{
+		DataDir: dataDir,
+	})
+	defer cgClient.Close()
+
+	// If the provider is already enabled, start the browser now so the first
+	// completion request does not fail on a cold start.
+	if cgClient.IsEnabled() {
+		go cgClient.WarmUp()
+	}
+
+	router := handler.NewRouterWithChatGPT(ks, ms, client, agClient, cgClient, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, distFS)
 
 	log.Printf("Lun Router Go backend running on :%s (opencode version: %s, data dir: %s)", port, vm.GetVersion(), dataDir)
 	if err := http.ListenAndServe(":"+port, router); err != nil {

@@ -21,6 +21,96 @@ export interface FetchModelsResult {
 	version: string;
 }
 
+export interface ChatGPTStatus {
+	enabled: boolean;
+	installed: boolean;
+	has_cookies?: boolean;
+	browser_path?: string;
+	install_state?: string;
+	install_progress?: number;
+	install_error?: string;
+	browser_running?: boolean;
+	browser_pid?: number;
+	browser_procs?: number;
+	browser_rss_mb?: number;
+	shell_enabled?: boolean;
+	work_dir?: string;
+	passthrough_tools?: boolean;
+}
+
+export async function fetchChatGPTStatus(): Promise<ChatGPTStatus> {
+	const res = await fetch('/api/providers/chatgpt/status');
+	if (!res.ok) {
+		throw new Error(`Failed to fetch ChatGPT status: ${res.statusText}`);
+	}
+	return res.json();
+}
+
+export async function updateChatGPTStatus(enabled: boolean): Promise<{ ok: boolean; enabled: boolean }> {
+	const res = await fetch('/api/providers/chatgpt/status', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ enabled })
+	});
+	if (!res.ok) {
+		const errData = await res.json().catch(() => ({}));
+		throw new Error(errData.error || `Failed to update ChatGPT status: ${res.statusText}`);
+	}
+	return res.json();
+}
+
+export async function installChatGPTBrowser(): Promise<{ ok: boolean }> {
+	const res = await fetch('/api/providers/chatgpt/install', {
+		method: 'POST'
+	});
+	if (!res.ok) {
+		const errData = await res.json().catch(() => ({}));
+		throw new Error(errData.error || `Failed to start browser install: ${res.statusText}`);
+	}
+	return res.json();
+}
+
+export async function uploadChatGPTCookies(cookiesJson: string): Promise<{ ok: boolean; has_cookies: boolean }> {
+	const res = await fetch('/api/providers/chatgpt/cookies', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: cookiesJson
+	});
+	if (!res.ok) {
+		const errData = await res.json().catch(() => ({}));
+		throw new Error(errData.error || `Failed to upload cookies: ${res.statusText}`);
+	}
+	return res.json();
+}
+
+export async function deleteChatGPTCookies(): Promise<{ ok: boolean; has_cookies: boolean }> {
+	const res = await fetch('/api/providers/chatgpt/cookies', {
+		method: 'DELETE'
+	});
+	if (!res.ok) {
+		const errData = await res.json().catch(() => ({}));
+		throw new Error(errData.error || `Failed to clear cookies: ${res.statusText}`);
+	}
+	return res.json();
+}
+
+export async function updateChatGPTTools(payload: {
+	shell_enabled?: boolean;
+	work_dir?: string;
+	passthrough_tools?: boolean;
+}): Promise<{ ok: boolean; shell_enabled: boolean; work_dir: string; passthrough_tools: boolean }> {
+	const res = await fetch('/api/providers/chatgpt/tools', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(payload)
+	});
+	if (!res.ok) {
+		const errData = await res.json().catch(() => ({}));
+		throw new Error(errData.error || `Failed to update tool settings: ${res.statusText}`);
+	}
+	return res.json();
+}
+
 export async function fetchProviderModels(
 	provider: string = 'opencode'
 ): Promise<FetchModelsResult> {

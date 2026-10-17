@@ -1,15 +1,19 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"strings"
 
 	"lun-router/internal/antigravity"
 	"lun-router/internal/auth"
 	"lun-router/internal/caveman"
+	"lun-router/internal/chatgpt"
 	"lun-router/internal/compactor"
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
@@ -18,10 +22,17 @@ import (
 )
 
 func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
+	return NewRouterWithChatGPT(ks, ms, client, agClient, nil, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, staticFS...)
+}
+
+func NewRouterWithChatGPT(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, cgClient *chatgpt.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
 	mux := http.NewServeMux()
 
 	keyH := NewKeyHandler(ks)
 	compH := NewCompletionHandler(ks, ms, client, agClient, compactorSvc, cavemanSvc, ponytailSvc)
+	if cgClient != nil {
+		compH.SetChatGPT(cgClient)
+	}
 	compactH := NewCompactorHandler(compactorSvc)
 	usageH := NewUsageHandler(usageSvc)
 	compH.SetUsage(usageSvc)
@@ -76,6 +87,14 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	mux.HandleFunc("PUT /api/providers/opencode/models", compH.UpdateProviderModels)
 	mux.HandleFunc("POST /api/providers/opencode/models/refresh", compH.RefreshOpenCodeModels)
 	mux.HandleFunc("POST /api/providers/opencode/version/refresh", compH.RefreshVersion)
+	mux.HandleFunc("GET /api/providers/chatgpt/models", compH.ChatGPTProviderModels)
+	mux.HandleFunc("PUT /api/providers/chatgpt/models", compH.UpdateChatGPTProviderModels)
+	mux.HandleFunc("GET /api/providers/chatgpt/status", compH.ChatGPTStatus)
+	mux.HandleFunc("PUT /api/providers/chatgpt/status", compH.UpdateChatGPTStatus)
+	mux.HandleFunc("POST /api/providers/chatgpt/install", compH.InstallChatGPTBrowser)
+	mux.HandleFunc("POST /api/providers/chatgpt/cookies", compH.UploadChatGPTCookies)
+	mux.HandleFunc("DELETE /api/providers/chatgpt/cookies", compH.DeleteChatGPTCookies)
+	mux.HandleFunc("PUT /api/providers/chatgpt/tools", compH.UpdateChatGPTTools)
 	mux.HandleFunc("POST /api/models/test", compH.TestModel)
 
 	// Antigravity Provider Routes (9router parity)
@@ -94,11 +113,53 @@ func NewRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 		mux.HandleFunc("GET /api/providers/antigravity/quota", agH.GetAllQuotas)
 	}
 
+	// Unknown API paths must not fall through to the SPA handler, which answers
+	// 200 text/html and makes clients fail with an opaque parse error.
+	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]string{
+				"message": fmt.Sprintf("Unknown endpoint %s %s on this router. Supported: POST /v1/chat/completions, GET /v1/models.", r.Method, r.URL.Path),
+				"type":    "invalid_request_error",
+			},
+		})
+	})
+
 	if len(staticFS) > 0 && staticFS[0] != nil {
 		mux.Handle("/", spaHandler(staticFS[0]))
 	}
 
-	return corsMiddleware(authMiddleware(authSvc, mux))
+	return corsMiddleware(apiRequestLogger(authMiddleware(authSvc, mux)))
+}
+
+// apiRequestLogger records inbound API traffic when LUN_DEBUG_REQUESTS=1.
+// It exists to answer "is the client even reaching this router, and on which
+// endpoint?" when an agent UI appears to reply with nothing.
+func apiRequestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if os.Getenv("LUN_DEBUG_REQUESTS") != "1" || !strings.HasPrefix(r.URL.Path, "/v1/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		var bodyPreview string
+		if r.Body != nil {
+			raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+			preview := raw
+			if len(preview) > 400 {
+				preview = preview[:400]
+			}
+			bodyPreview = string(preview)
+		}
+
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		fmt.Fprintf(os.Stderr, "[req] %s %s ua=%q auth=%v body=%s\n",
+			r.Method, r.URL.Path, r.Header.Get("User-Agent"), r.Header.Get("Authorization") != "", bodyPreview)
+		next.ServeHTTP(rec, r)
+		fmt.Fprintf(os.Stderr, "[req] %s %s -> %d\n", r.Method, r.URL.Path, rec.status)
+	})
 }
 
 func authMiddleware(authSvc *auth.Service, next http.Handler) http.Handler {
