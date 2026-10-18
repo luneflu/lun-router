@@ -12,6 +12,7 @@
 	import { ponytailState } from '$lib/state/ponytail.svelte';
 	import { chatgptState } from '$lib/state/chatgpt.svelte';
 	import { zaiState } from '$lib/state/zai.svelte';
+	import { kilocodeState } from '$lib/state/kilocode.svelte';
 	import Sidebar from '$lib/components/sidebar/sidebar.svelte';
 	import Navbar from '$lib/components/navbar/navbar.svelte';
 	import * as Alert from '$lib/components/ui/alert';
@@ -25,14 +26,16 @@
 
 	let mobileMenuOpen = $state(false);
 
-	const activeView = $derived<'home' | 'usage' | 'opencode' | 'antigravity' | 'chatgpt' | 'zai' | 'token-saver'>(
+	const activeView = $derived<'home' | 'usage' | 'opencode' | 'antigravity' | 'kilocode' | 'chatgpt' | 'zai' | 'token-saver'>(
 		page.url.pathname.startsWith('/chatgpt')
 			? 'chatgpt'
 			: page.url.pathname.startsWith('/zai')
 				? 'zai'
 				: page.url.pathname.startsWith('/antigravity')
 				? 'antigravity'
-				: page.url.pathname.startsWith('/opencode')
+				: page.url.pathname.startsWith('/kilocode')
+					? 'kilocode'
+					: page.url.pathname.startsWith('/opencode')
 					? 'opencode'
 					: page.url.pathname.startsWith('/token-saver')
 						? 'token-saver'
@@ -45,6 +48,7 @@
 		keysState.load();
 		providerState.load();
 		antigravityState.load();
+		kilocodeState.load();
 		compactorState.load();
 		ponytailState.load();
 		chatgptState.load();
@@ -82,6 +86,9 @@
 			antigravityAccounts={antigravityState.activeAccountsCount}
 			antigravityEnabledModels={antigravityState.enabledCount}
 			antigravityTotalModels={antigravityState.totalCount}
+			kilocodeAccounts={kilocodeState.activeAccountsCount}
+			kilocodeEnabledModels={kilocodeState.enabledCount}
+			kilocodeTotalModels={kilocodeState.totalCount}
 			mobileOpen={mobileMenuOpen}
 			onCloseMobile={() => (mobileMenuOpen = false)}
 		/>

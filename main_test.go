@@ -21,6 +21,7 @@ import (
 	"lun-router/internal/caveman"
 	"lun-router/internal/compactor"
 	"lun-router/internal/handler"
+	"lun-router/internal/kilocode"
 	"lun-router/internal/model"
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
@@ -1888,4 +1889,89 @@ func TestPasswordAuthWorkflow(t *testing.T) {
 		t.Fatalf("expected 401 Unauthorized after logout, got %d", keysResp4.StatusCode)
 	}
 	keysResp4.Body.Close()
+}
+
+func TestKiloCodeIntegration(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "lun-kilocode-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	ks, _ := store.NewKeyStore(tempDir)
+	ms, _ := store.NewModelStore(tempDir)
+	kcStore, _ := kilocode.NewAccountStore(tempDir)
+	kcClient := kilocode.NewClient(kcStore, tempDir)
+
+	router := handler.NewRouterWithAllProviders(ks, ms, nil, nil, nil, nil, kcClient, nil, nil, nil, nil, nil)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	client := server.Client()
+
+	// 1. Initial accounts should be empty
+	resp, err := client.Get(server.URL + "/api/providers/kilocode/accounts")
+	if err != nil {
+		t.Fatalf("GET accounts: %v", err)
+	}
+	var listResp struct {
+		Accounts []kilocode.Account `json:"accounts"`
+		Count    int                `json:"count"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&listResp)
+	resp.Body.Close()
+	if listResp.Count != 0 {
+		t.Errorf("expected 0 accounts initially, got %d", listResp.Count)
+	}
+
+	// 2. Pre-populate account in store
+	testAcc := &kilocode.Account{
+		Email:       "developer@kilocode.ai",
+		OrgID:       "org_test123",
+		AccessToken: "kc_secret_token_abcdef123456",
+		IsActive:    true,
+	}
+	if err := kcStore.Save(testAcc); err != nil {
+		t.Fatalf("Save account: %v", err)
+	}
+
+	// 3. List accounts and verify masked token
+	resp, _ = client.Get(server.URL + "/api/providers/kilocode/accounts")
+	_ = json.NewDecoder(resp.Body).Decode(&listResp)
+	resp.Body.Close()
+	if listResp.Count != 1 {
+		t.Fatalf("expected 1 account in list, got %d", listResp.Count)
+	}
+	if listResp.Accounts[0].AccessToken == "kc_secret_token_abcdef123456" {
+		t.Errorf("expected masked token, got unmasked")
+	}
+
+	// 4. GET /v1/models should contain kilocode/ models
+	resp, err = client.Get(server.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("GET /v1/models: %v", err)
+	}
+	var modelsList struct {
+		Data []handler.ModelItem `json:"data"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&modelsList)
+	resp.Body.Close()
+
+	hasKilocodeModel := false
+	for _, m := range modelsList.Data {
+		if strings.HasPrefix(m.ID, "kilocode/") {
+			hasKilocodeModel = true
+			break
+		}
+	}
+	if !hasKilocodeModel {
+		t.Errorf("expected kilocode/ models in /v1/models")
+	}
+
+	// 5. Parity route GET /api/providers/kilo/free-models
+	resp, err = client.Get(server.URL + "/api/providers/kilo/free-models")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK for /api/providers/kilo/free-models, got %v", resp)
+	}
+	resp.Body.Close()
 }

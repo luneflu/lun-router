@@ -10,7 +10,7 @@
 
 	interface Props {
 		error: string | null;
-		activeView: 'home' | 'usage' | 'opencode' | 'antigravity' | 'chatgpt' | 'zai' | 'token-saver';
+		activeView: 'home' | 'usage' | 'opencode' | 'antigravity' | 'kilocode' | 'chatgpt' | 'zai' | 'token-saver';
 		onToggleMobileMenu?: () => void;
 	}
 
@@ -55,6 +55,10 @@
 					<span class="text-muted-foreground">Providers</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
 					<span class="font-semibold text-foreground">Google Antigravity</span>
+				{:else if activeView === 'kilocode'}
+					<span class="text-muted-foreground">Providers</span>
+					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
+					<span class="font-semibold text-foreground">Kilo Code</span>
 				{:else if activeView === 'chatgpt'}
 		<span class="text-muted-foreground/60">/</span>
 		<span class="text-foreground">ChatGPT Web</span>

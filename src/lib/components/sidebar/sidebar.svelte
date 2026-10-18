@@ -10,19 +10,23 @@
 	import XIcon from '@lucide/svelte/icons/x';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import BrainIcon from '@lucide/svelte/icons/brain';
+	import CodeIcon from '@lucide/svelte/icons/code';
 	import { Button } from '$lib/components/ui/button';
 	import { chatgptState } from '$lib/state/chatgpt.svelte';
 	import { zaiState } from '$lib/state/zai.svelte';
 
 	interface Props {
-		activeView: 'home' | 'usage' | 'opencode' | 'antigravity' | 'chatgpt' | 'zai' | 'token-saver';
-		onSelectView?: (view: 'home' | 'usage' | 'opencode' | 'antigravity' | 'chatgpt' | 'zai' | 'token-saver') => void;
+		activeView: 'home' | 'usage' | 'opencode' | 'antigravity' | 'kilocode' | 'chatgpt' | 'zai' | 'token-saver';
+		onSelectView?: (view: 'home' | 'usage' | 'opencode' | 'antigravity' | 'kilocode' | 'chatgpt' | 'zai' | 'token-saver') => void;
 		totalKeys: number;
 		enabledModels: number;
 		totalModels: number;
 		antigravityAccounts?: number;
 		antigravityEnabledModels?: number;
 		antigravityTotalModels?: number;
+		kilocodeAccounts?: number;
+		kilocodeEnabledModels?: number;
+		kilocodeTotalModels?: number;
 		mobileOpen: boolean;
 		onCloseMobile: () => void;
 	}
@@ -36,11 +40,14 @@
 		antigravityAccounts = 0,
 		antigravityEnabledModels = 0,
 		antigravityTotalModels = 0,
+		kilocodeAccounts = 0,
+		kilocodeEnabledModels = 0,
+		kilocodeTotalModels = 0,
 		mobileOpen,
 		onCloseMobile
 	}: Props = $props();
 
-	function handleNavigate(view: 'home' | 'usage' | 'opencode' | 'antigravity' | 'chatgpt' | 'zai' | 'token-saver') {
+	function handleNavigate(view: 'home' | 'usage' | 'opencode' | 'antigravity' | 'kilocode' | 'chatgpt' | 'zai' | 'token-saver') {
 		onSelectView?.(view);
 		onCloseMobile();
 	}
@@ -140,7 +147,7 @@
 					Providers
 				</span>
 				<span class="font-mono text-[10px] text-muted-foreground">
-					{1 + (antigravityAccounts > 0 ? 1 : 0)} active
+					{1 + (antigravityAccounts > 0 ? 1 : 0) + (kilocodeAccounts > 0 ? 1 : 0)} active
 				</span>
 			</div>
 
@@ -206,6 +213,41 @@
 					{#if antigravityTotalModels > 0}
 						<span class="font-mono text-[10px] text-muted-foreground">
 							{antigravityEnabledModels}/{antigravityTotalModels}
+						</span>
+					{/if}
+				</div>
+			</a>
+
+			<a
+				href="/kilocode"
+				class={cn(
+					'flex items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition-colors',
+					activeView === 'kilocode'
+						? 'bg-orange-500/10 font-semibold text-orange-500'
+						: 'text-muted-foreground hover:bg-muted hover:text-foreground'
+				)}
+				onclick={() => handleNavigate('kilocode')}
+			>
+				<div class="flex items-center gap-2.5">
+					<div class="relative flex items-center justify-center">
+						<CodeIcon class="size-4" />
+						<span
+							class={cn(
+								'absolute -end-0.5 -top-0.5 size-1.5 rounded-full',
+								kilocodeAccounts > 0 ? 'bg-orange-500' : 'bg-muted-foreground/40'
+							)}
+							title={kilocodeAccounts > 0 ? 'Active accounts' : 'No accounts connected'}
+						></span>
+					</div>
+					<div class="flex flex-col items-start text-start">
+						<span>Kilo Code</span>
+					</div>
+				</div>
+
+				<div class="flex items-center gap-1.5">
+					{#if kilocodeTotalModels > 0}
+						<span class="font-mono text-[10px] text-muted-foreground">
+							{kilocodeEnabledModels}/{kilocodeTotalModels}
 						</span>
 					{/if}
 				</div>

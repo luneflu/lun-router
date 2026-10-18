@@ -16,6 +16,7 @@ import (
 	"lun-router/internal/caveman"
 	"lun-router/internal/chatgpt"
 	"lun-router/internal/compactor"
+	"lun-router/internal/kilocode"
 	"lun-router/internal/model"
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
@@ -31,6 +32,7 @@ type CompletionHandler struct {
 	agClient         *antigravity.Client
 	cgClient         *chatgpt.Client
 	zaiClient        *zai.Client
+	kcClient         *kilocode.Client
 	compactorService *compactor.Service
 	cavemanService   *caveman.Service
 	ponytailService  *ponytail.Service
@@ -50,6 +52,11 @@ func (h *CompletionHandler) SetChatGPT(c *chatgpt.Client) {
 // SetZai attaches the z.ai provider client.
 func (h *CompletionHandler) SetZai(c *zai.Client) {
 	h.zaiClient = c
+}
+
+// SetKiloCode attaches the Kilo Code provider client.
+func (h *CompletionHandler) SetKiloCode(c *kilocode.Client) {
+	h.kcClient = c
 }
 
 func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service) *CompletionHandler {
@@ -76,6 +83,7 @@ const (
 	antigravityPrefix = "antigravity/"
 	chatgptPrefix     = "chatgpt/"
 	zaiPrefix         = "zai/"
+	kilocodePrefix    = "kilocode/"
 )
 
 // GET /v1/models (OpenAI-compatible catalog: returns only enabled models)
@@ -133,6 +141,22 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 					Enabled: true,
 				}
 				model.EnrichModelItem(&item, "zai")
+				filtered = append(filtered, item)
+			}
+		}
+	}
+
+	// Kilo Code models
+	if h.kcClient != nil {
+		for _, m := range h.kcClient.GetCatalogModels() {
+			if h.modelStore == nil || !h.modelStore.IsDisabled("kilocode", m) {
+				item := ModelItem{
+					ID:      kilocodePrefix + m,
+					Object:  "model",
+					OwnedBy: "kilocode",
+					Enabled: true,
+				}
+				model.EnrichModelItem(&item, "kilocode")
 				filtered = append(filtered, item)
 			}
 		}
@@ -887,6 +911,69 @@ func (h *CompletionHandler) pingSingleModel(ctx context.Context, model string, p
 		}
 	}
 
+	// Kilo Code Model Test
+	if provider == "kilocode" || (provider == "" && h.isKilocodeModel(model)) {
+		cleanModel := kilocode.CleanModelID(bareModel)
+		if h.modelStore != nil && h.modelStore.IsDisabled("kilocode", cleanModel) {
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     fmt.Sprintf("Model '%s' is disabled for provider kilocode", model),
+				LatencyMs: 0,
+			}
+		}
+
+		if h.kcClient == nil {
+			return ModelTestResult{
+				OK:    false,
+				Model: model,
+				Error: "Kilo Code provider not initialized",
+			}
+		}
+
+		mCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		start := time.Now()
+		testBody := map[string]any{
+			"model": cleanModel,
+			"messages": []map[string]string{
+				{"role": "user", "content": prompt},
+			},
+		}
+
+		upResp, _, err := h.kcClient.ExecuteChat(mCtx, testBody, false)
+		latencyMs := time.Since(start).Milliseconds()
+		if err != nil {
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     err.Error(),
+				LatencyMs: latencyMs,
+			}
+		}
+		defer upResp.Body.Close()
+
+		if upResp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(upResp.Body)
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     string(bodyBytes),
+				LatencyMs: latencyMs,
+				Status:    upResp.StatusCode,
+			}
+		}
+
+		raw, _ := io.ReadAll(io.LimitReader(upResp.Body, 1<<20))
+		return ModelTestResult{
+			OK:        true,
+			Model:     model,
+			LatencyMs: latencyMs,
+			Response:  assistantTextFromResponse(raw),
+		}
+	}
+
 	// z.ai Model Test
 	if provider == "zai" || (provider == "" && h.isZaiModel(model)) {
 		cleanModel := zai.CleanModelID(bareModel)
@@ -1200,6 +1287,18 @@ func (h *CompletionHandler) isChatGPTModel(model string) bool {
 	return chatgpt.IsCatalogModel(model)
 }
 
+// isKilocodeModel resolves whether a model belongs to the Kilo Code provider.
+func (h *CompletionHandler) isKilocodeModel(model string) bool {
+	if provider, _, ok := splitProviderPrefix(model); ok {
+		return provider == "kilocode"
+	}
+	if h.kcClient == nil {
+		return false
+	}
+	clean := kilocode.CleanModelID(model)
+	return h.kcClient.IsCatalogModel(clean)
+}
+
 // splitProviderPrefix resolves an explicit provider namespace. ok is false for a
 // bare ID, which keeps catalog-based routing.
 func splitProviderPrefix(model string) (provider, id string, ok bool) {
@@ -1210,6 +1309,10 @@ func splitProviderPrefix(model string) (provider, id string, ok bool) {
 		return "antigravity", antigravity.CleanModelID(model), true
 	case strings.HasPrefix(model, chatgptPrefix):
 		return "chatgpt", strings.TrimPrefix(model, chatgptPrefix), true
+	case strings.HasPrefix(model, zaiPrefix):
+		return "zai", strings.TrimPrefix(model, zaiPrefix), true
+	case kilocode.HasKilocodePrefix(model):
+		return "kilocode", kilocode.CleanModelID(model), true
 	default:
 		return "", model, false
 	}
@@ -1550,6 +1653,90 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 
 		bodyBytes, _ := io.ReadAll(upResp.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(bodyBytes)
+		return
+	}
+
+	// Check if this is a Kilo Code model
+	if modelProvider == "kilocode" || (modelProvider == "" && h.isKilocodeModel(model)) {
+		cleanModel := kilocode.CleanModelID(model)
+		if h.modelStore != nil && h.modelStore.IsDisabled("kilocode", cleanModel) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Model '%s' is disabled for provider kilocode", model),
+					"type":    "invalid_request_error",
+				},
+			})
+			return
+		}
+
+		if h.kcClient == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": "Kilo Code provider not initialized",
+					"type":    "api_error",
+				},
+			})
+			return
+		}
+
+		ev.Provider = "kilocode"
+		upResp, acc, err := h.kcClient.ExecuteChat(r.Context(), bodyMap, clientWantsStream)
+		if err != nil {
+			ev.Err = "upstream_error"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Upstream Kilo Code error: %v", err),
+					"type":    "api_error",
+				},
+			})
+			return
+		}
+		if acc != nil {
+			ev.Account = acc.Email
+		}
+		ev.UpMs = time.Since(reqStart).Milliseconds()
+		defer upResp.Body.Close()
+
+		if upResp.StatusCode != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(upResp.StatusCode)
+			bodyBytes, _ := io.ReadAll(upResp.Body)
+			_, _ = w.Write(bodyBytes)
+			return
+		}
+
+		if clientWantsStream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			flusher, canFlush := w.(http.Flusher)
+			reader := bufio.NewReader(upResp.Body)
+			for {
+				line, err := reader.ReadBytes('\n')
+				if len(line) > 0 {
+					captureStreamUsage(line, tokens)
+					_, _ = w.Write(line)
+					if canFlush {
+						flusher.Flush()
+					}
+				}
+				if err != nil {
+					break
+				}
+			}
+			return
+		}
+
+		bodyBytes, _ := io.ReadAll(upResp.Body)
+		captureNonStreamUsage(bodyBytes, tokens)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(bodyBytes)
 		return

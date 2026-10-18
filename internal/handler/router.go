@@ -15,6 +15,7 @@ import (
 	"lun-router/internal/caveman"
 	"lun-router/internal/chatgpt"
 	"lun-router/internal/compactor"
+	"lun-router/internal/kilocode"
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
 	"lun-router/internal/store"
@@ -33,6 +34,11 @@ func NewRouterWithChatGPT(ks *store.KeyStore, ms *store.ModelStore, client *open
 
 // NewRouterWithProviders wires every provider, including z.ai.
 func NewRouterWithProviders(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, cgClient *chatgpt.Client, zaiClient *zai.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
+	return NewRouterWithAllProviders(ks, ms, client, agClient, cgClient, zaiClient, nil, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, staticFS...)
+}
+
+// NewRouterWithAllProviders wires all providers including Kilo Code.
+func NewRouterWithAllProviders(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, cgClient *chatgpt.Client, zaiClient *zai.Client, kcClient *kilocode.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
 
 	mux := http.NewServeMux()
 
@@ -43,6 +49,9 @@ func NewRouterWithProviders(ks *store.KeyStore, ms *store.ModelStore, client *op
 	}
 	if zaiClient != nil {
 		compH.SetZai(zaiClient)
+	}
+	if kcClient != nil {
+		compH.SetKiloCode(kcClient)
 	}
 	compactH := NewCompactorHandler(compactorSvc)
 	usageH := NewUsageHandler(usageSvc)
@@ -133,6 +142,26 @@ func NewRouterWithProviders(ks *store.KeyStore, ms *store.ModelStore, client *op
 		mux.HandleFunc("GET /api/providers/antigravity/quota", agH.GetAllQuotas)
 	}
 
+	// Kilo Code Provider Routes (9router parity)
+	if kcClient != nil {
+		kcH := NewKiloCodeHandler(kcClient, ms)
+		mux.HandleFunc("GET /api/providers/kilocode/accounts", kcH.ListAccounts)
+		mux.HandleFunc("POST /api/providers/kilocode/accounts", kcH.CreateAccount)
+		mux.HandleFunc("PUT /api/providers/kilocode/accounts/{id}", kcH.UpdateAccount)
+		mux.HandleFunc("DELETE /api/providers/kilocode/accounts/{id}", kcH.DeleteAccount)
+		mux.HandleFunc("POST /api/providers/kilocode/accounts/{id}/test", kcH.TestAccount)
+		mux.HandleFunc("POST /api/providers/kilocode/oauth/device-code", kcH.RequestDeviceCode)
+		mux.HandleFunc("GET /api/providers/kilocode/oauth/device-code", kcH.RequestDeviceCode)
+		mux.HandleFunc("GET /api/oauth/kilocode/device-code", kcH.RequestDeviceCode)
+		mux.HandleFunc("POST /api/providers/kilocode/oauth/poll", kcH.Poll)
+		mux.HandleFunc("GET /api/providers/kilocode/oauth/poll", kcH.Poll)
+		mux.HandleFunc("POST /api/oauth/kilocode/poll", kcH.Poll)
+		mux.HandleFunc("GET /api/providers/kilocode/models", kcH.ListModels)
+		mux.HandleFunc("PUT /api/providers/kilocode/models", kcH.UpdateModels)
+		mux.HandleFunc("POST /api/providers/kilocode/models/refresh", kcH.RefreshModels)
+		mux.HandleFunc("GET /api/providers/kilo/free-models", kcH.GetFreeModels)
+	}
+
 	// Unknown API paths must not fall through to the SPA handler, which answers
 	// 200 text/html and makes clients fail with an opaque parse error.
 	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
@@ -195,6 +224,7 @@ func authMiddleware(authSvc *auth.Service, next http.Handler) http.Handler {
 		if strings.HasPrefix(path, "/api/auth/") ||
 			path == "/api/health" ||
 			path == "/callback" ||
+			strings.HasPrefix(path, "/api/oauth/") ||
 			strings.HasPrefix(path, "/v1/") ||
 			!strings.HasPrefix(path, "/api/") {
 			next.ServeHTTP(w, r)

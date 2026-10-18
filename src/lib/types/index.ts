@@ -56,6 +56,15 @@ export interface AntigravityAccount {
 	createdAt: string;
 }
 
+export interface KilocodeAccount {
+	id: string;
+	email: string;
+	orgId?: string;
+	accessToken?: string;
+	isActive: boolean;
+	createdAt: string;
+}
+
 export interface AntigravityQuotaItem {
 	name: string;
 	modelKey?: string;

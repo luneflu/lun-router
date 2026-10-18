@@ -209,3 +209,21 @@ func captureStreamUsage(line []byte, tk *usage.Tokens) {
 	}
 	env.apply(tk)
 }
+
+// captureNonStreamUsage pulls the usage object out of a full JSON response.
+func captureNonStreamUsage(body []byte, tk *usage.Tokens) {
+	if tk == nil || !bytes.Contains(body, []byte(`"usage"`)) {
+		return
+	}
+	var resp struct {
+		Usage json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil || len(resp.Usage) == 0 {
+		return
+	}
+	var env usageEnvelope
+	if err := json.Unmarshal(resp.Usage, &env); err != nil {
+		return
+	}
+	env.apply(tk)
+}
