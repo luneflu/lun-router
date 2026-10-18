@@ -273,5 +273,7 @@
 		onToggleModel={(model, enabled) => providerState.toggleModel(model.id, enabled)}
 		onToggleAll={(enabled) => providerState.toggleAll(enabled)}
 		onSelectChatModel={(id) => (selectedChatModel = id)}
+		onAddModel={(data) => providerState.addCustomModel(data)}
+		onDeleteModel={(id) => providerState.deleteCustomModel(id)}
 	/>
 </div>

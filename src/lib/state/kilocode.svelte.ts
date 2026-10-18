@@ -11,6 +11,11 @@ import {
 	testKilocodeAccount,
 	type CreateAccountPayload
 } from '$lib/api/kilocode';
+import {
+	addCustomModel as apiAddCustomModel,
+	deleteCustomModel as apiDeleteCustomModel,
+	type CreateCustomModelPayload
+} from '$lib/api/providers';
 
 export class KilocodeState {
 	provider = 'kilocode';
@@ -133,6 +138,18 @@ export class KilocodeState {
 			this.models = prev;
 			throw e;
 		}
+	}
+
+	async addCustomModel(payload: CreateCustomModelPayload) {
+		const res = await apiAddCustomModel(this.provider, payload);
+		await this.load();
+		return res;
+	}
+
+	async deleteCustomModel(modelId: string) {
+		const res = await apiDeleteCustomModel(this.provider, modelId);
+		this.models = this.models.filter((m) => m.id !== modelId && m.id !== `kilocode/${modelId}`);
+		return res;
 	}
 }
 

@@ -2,6 +2,7 @@
 	import * as Card from '$lib/components/ui/card';
 	import * as Table from '$lib/components/ui/table';
 	import * as Select from '$lib/components/ui/select';
+	import * as Dialog from '$lib/components/ui/dialog';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Badge } from '$lib/components/ui/badge';
@@ -9,10 +10,12 @@
 	import { toast } from '$lib/state/toast.svelte';
 	import { cn } from '$lib/utils';
 	import type { ProviderModel } from '$lib/types';
-	import { pingModel } from '$lib/api/providers';
+	import { pingModel, type CreateCustomModelPayload } from '$lib/api/providers';
 
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import PlayIcon from '@lucide/svelte/icons/play';
+	import PlusIcon from '@lucide/svelte/icons/plus';
+	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import FlaskConicalIcon from '@lucide/svelte/icons/flask-conical';
 	import MessageSquareIcon from '@lucide/svelte/icons/message-square';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
@@ -26,6 +29,8 @@
 		onToggleModel: (model: ProviderModel, enabled: boolean) => Promise<void> | void;
 		onToggleAll: (enabled: boolean) => Promise<void> | void;
 		onSelectChatModel?: (modelId: string) => void;
+		onAddModel?: (data: CreateCustomModelPayload) => Promise<unknown> | unknown;
+		onDeleteModel?: (modelId: string) => Promise<unknown> | unknown;
 	}
 
 	let {
@@ -35,13 +40,25 @@
 		loading = false,
 		onToggleModel,
 		onToggleAll,
-		onSelectChatModel
+		onSelectChatModel,
+		onAddModel,
+		onDeleteModel
 	}: Props = $props();
 
 	let searchQuery = $state('');
 	let filter = $state<'all' | 'enabled' | 'disabled'>('all');
 	let togglingId = $state<string | null>(null);
 	let bulkToggling = $state(false);
+
+	let addDialogOpen = $state(false);
+	let newModelId = $state('');
+	let newContextLength = $state('');
+	let newMaxOutput = $state('');
+	let newVision = $state(false);
+	let newReasoning = $state(false);
+	let newTools = $state(true);
+	let addingModel = $state(false);
+	let deletingId = $state<string | null>(null);
 
 	let testResults = $state<
 		Record<string, { ok: boolean; latencyMs?: number; error?: string }>
@@ -195,6 +212,51 @@
 		onSelectChatModel?.(modelId);
 		window.scrollTo({ top: 0, behavior: 'smooth' });
 	}
+
+	async function handleAddCustomModel() {
+		const id = newModelId.trim();
+		if (!id) {
+			toast.error('Validation Error', 'Model ID is required');
+			return;
+		}
+
+		addingModel = true;
+		try {
+			await onAddModel?.({
+				id,
+				context_length: newContextLength ? parseInt(newContextLength, 10) : undefined,
+				max_completion_tokens: newMaxOutput ? parseInt(newMaxOutput, 10) : undefined,
+				vision: newVision,
+				reasoning: newReasoning,
+				tools: newTools
+			});
+			toast.success('Custom Model Added', id);
+			addDialogOpen = false;
+			newModelId = '';
+			newContextLength = '';
+			newMaxOutput = '';
+			newVision = false;
+			newReasoning = false;
+			newTools = true;
+		} catch (e: unknown) {
+			toast.error('Failed to Add Model', e instanceof Error ? e.message : 'Error adding custom model');
+		} finally {
+			addingModel = false;
+		}
+	}
+
+	async function handleDeleteCustomModel(modelId: string) {
+		if (!confirm(`Delete custom model "${modelId}"?`)) return;
+		deletingId = modelId;
+		try {
+			await onDeleteModel?.(modelId);
+			toast.info('Model Deleted', modelId);
+		} catch (e: unknown) {
+			toast.error('Delete Failed', e instanceof Error ? e.message : 'Error deleting model');
+		} finally {
+			deletingId = null;
+		}
+	}
 </script>
 
 <Card.Root class="overflow-hidden p-0">
@@ -286,6 +348,18 @@
 
 			<!-- Bulk enable/disable buttons -->
 			<div class="flex items-center gap-1">
+				{#if onAddModel}
+					<Button
+						variant="default"
+						size="sm"
+						class="h-8 gap-1.5 text-xs"
+						onclick={() => (addDialogOpen = true)}
+						title="Add custom model"
+					>
+						<PlusIcon class="size-3.5" />
+						<span>Add Model</span>
+					</Button>
+				{/if}
 				<Button
 					variant="outline"
 					size="sm"
@@ -386,6 +460,14 @@
 								<div class="flex flex-col gap-1">
 									<div class="flex flex-wrap items-center gap-1.5">
 										<span class="font-semibold text-foreground">{m.id}</span>
+										{#if m.is_custom}
+											<Badge
+												variant="outline"
+												class="border-purple-500/30 bg-purple-500/10 px-1.5 py-0 text-[10px] font-normal text-purple-600 dark:text-purple-400"
+											>
+												Custom
+											</Badge>
+										{/if}
 										{#if m.id.includes(':free') || m.id.includes('free')}
 											<Badge
 												variant="outline"
@@ -473,6 +555,19 @@
 										{/if}
 									{/if}
 
+									{#if m.is_custom && onDeleteModel}
+										<Button
+											variant="ghost"
+											size="sm"
+											class="h-7 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+											disabled={deletingId === m.id}
+											onclick={() => handleDeleteCustomModel(m.id)}
+											title={`Delete custom model ${m.id}`}
+										>
+											<Trash2Icon class="size-3" />
+										</Button>
+									{/if}
+
 									{#if onSelectChatModel}
 										<Button
 											variant="ghost"
@@ -511,3 +606,104 @@
 		</Table.Root>
 	</Card.Content>
 </Card.Root>
+
+<!-- Add Custom Model Dialog -->
+{#if onAddModel}
+	<Dialog.Root bind:open={addDialogOpen}>
+		<Dialog.Content class="sm:max-w-md">
+			<Dialog.Header>
+				<Dialog.Title>Add Custom Model</Dialog.Title>
+				<Dialog.Description class="text-xs">
+					Register any model ID supported by this provider gateway. It will be available for completion and listed in /v1/models.
+				</Dialog.Description>
+			</Dialog.Header>
+
+			<form
+				onsubmit={(e) => {
+					e.preventDefault();
+					handleAddCustomModel();
+				}}
+				class="flex flex-col gap-4 py-2"
+			>
+				<div class="flex flex-col gap-1.5">
+					<label for="custom-model-id" class="text-xs font-medium">Model ID *</label>
+					<Input
+						id="custom-model-id"
+						bind:value={newModelId}
+						placeholder="e.g. anthropic/claude-3.7-sonnet"
+						class="font-mono text-xs"
+						required
+					/>
+					<p class="text-[10px] text-muted-foreground">
+						The model identifier passed upstream in completions.
+					</p>
+				</div>
+
+				<div class="grid grid-cols-2 gap-3">
+					<div class="flex flex-col gap-1.5">
+						<label for="context-window" class="text-xs font-medium">Context Window</label>
+						<Input
+							id="context-window"
+							type="number"
+							bind:value={newContextLength}
+							placeholder="e.g. 128000"
+							class="font-mono text-xs"
+						/>
+					</div>
+					<div class="flex flex-col gap-1.5">
+						<label for="max-output" class="text-xs font-medium">Max Output</label>
+						<Input
+							id="max-output"
+							type="number"
+							bind:value={newMaxOutput}
+							placeholder="e.g. 8192"
+							class="font-mono text-xs"
+						/>
+					</div>
+				</div>
+
+				<div class="flex flex-col gap-2 rounded-lg border border-border p-3">
+					<span class="text-xs font-medium text-foreground">Capabilities</span>
+					<div class="flex flex-wrap items-center gap-4 text-xs">
+						<label class="flex items-center gap-2 cursor-pointer">
+							<Switch bind:checked={newTools} size="sm" />
+							<span>Tools</span>
+						</label>
+						<label class="flex items-center gap-2 cursor-pointer">
+							<Switch bind:checked={newReasoning} size="sm" />
+							<span>Reasoning</span>
+						</label>
+						<label class="flex items-center gap-2 cursor-pointer">
+							<Switch bind:checked={newVision} size="sm" />
+							<span>Vision</span>
+						</label>
+					</div>
+				</div>
+
+				<Dialog.Footer class="mt-2">
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onclick={() => (addDialogOpen = false)}
+					>
+						Cancel
+					</Button>
+					<Button
+						type="submit"
+						variant="default"
+						size="sm"
+						disabled={addingModel || !newModelId.trim()}
+					>
+						{#if addingModel}
+							<RefreshCwIcon class="size-3.5 animate-spin" />
+							<span>Adding...</span>
+						{:else}
+							<span>Add Model</span>
+						{/if}
+					</Button>
+				</Dialog.Footer>
+			</form>
+		</Dialog.Content>
+	</Dialog.Root>
+{/if}

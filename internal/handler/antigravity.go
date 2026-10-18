@@ -238,12 +238,40 @@ func (h *AntigravityHandler) ListModels(w http.ResponseWriter, r *http.Request) 
 		models = append(models, item)
 	}
 
+	if h.modelStore != nil {
+		for _, cm := range h.modelStore.ListCustomModels("antigravity") {
+			item := ModelItem{
+				ID:                  antigravityPrefix + cm.ID,
+				Object:              "model",
+				OwnedBy:             "antigravity",
+				Enabled:             !h.modelStore.IsDisabled("antigravity", cm.ID),
+				IsCustom:            true,
+				Capabilities:        cm.Capabilities,
+				ThinkingLevels:      cm.ThinkingLevels,
+				ContextLength:       cm.ContextLength,
+				MaxCompletionTokens: cm.MaxCompletionTokens,
+			}
+			if item.Capabilities == nil {
+				model.EnrichModelItem(&item, "antigravity")
+			}
+			models = append(models, item)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"provider": "antigravity",
 		"version":  "2.11.0",
 		"models":   models,
 	})
+}
+
+func (h *AntigravityHandler) AddCustomModel(w http.ResponseWriter, r *http.Request) {
+	handleAddCustomModel(h.modelStore, "antigravity", w, r)
+}
+
+func (h *AntigravityHandler) DeleteCustomModel(w http.ResponseWriter, r *http.Request) {
+	handleDeleteCustomModel(h.modelStore, "antigravity", w, r)
 }
 
 // POST /api/providers/antigravity/models/refresh (Sync latest models from Google Cloud Code)

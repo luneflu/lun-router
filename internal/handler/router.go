@@ -106,6 +106,9 @@ func NewRouterWithAllProviders(ks *store.KeyStore, ms *store.ModelStore, client 
 	mux.HandleFunc("GET /api/providers/opencode/models", compH.ProviderModels)
 	mux.HandleFunc("PUT /api/providers/opencode/models", compH.UpdateProviderModels)
 	mux.HandleFunc("POST /api/providers/opencode/models/refresh", compH.RefreshOpenCodeModels)
+	mux.HandleFunc("POST /api/providers/opencode/models/custom", compH.AddCustomModel)
+	mux.HandleFunc("DELETE /api/providers/opencode/models/custom/{id...}", compH.DeleteCustomModel)
+	mux.HandleFunc("DELETE /api/providers/opencode/models/custom", compH.DeleteCustomModel)
 	mux.HandleFunc("POST /api/providers/opencode/version/refresh", compH.RefreshVersion)
 	mux.HandleFunc("GET /api/providers/opencode/proxy", compH.OpenCodeProxyStatus)
 	mux.HandleFunc("PUT /api/providers/opencode/proxy", compH.UpdateOpenCodeProxy)
@@ -138,6 +141,9 @@ func NewRouterWithAllProviders(ks *store.KeyStore, ms *store.ModelStore, client 
 		mux.HandleFunc("GET /api/providers/antigravity/models", agH.ListModels)
 		mux.HandleFunc("PUT /api/providers/antigravity/models", agH.UpdateModels)
 		mux.HandleFunc("POST /api/providers/antigravity/models/refresh", agH.RefreshModels)
+		mux.HandleFunc("POST /api/providers/antigravity/models/custom", agH.AddCustomModel)
+		mux.HandleFunc("DELETE /api/providers/antigravity/models/custom/{id...}", agH.DeleteCustomModel)
+		mux.HandleFunc("DELETE /api/providers/antigravity/models/custom", agH.DeleteCustomModel)
 		mux.HandleFunc("GET /api/providers/antigravity/accounts/{id}/quota", agH.GetAccountQuota)
 		mux.HandleFunc("GET /api/providers/antigravity/quota", agH.GetAllQuotas)
 	}
@@ -159,6 +165,9 @@ func NewRouterWithAllProviders(ks *store.KeyStore, ms *store.ModelStore, client 
 		mux.HandleFunc("GET /api/providers/kilocode/models", kcH.ListModels)
 		mux.HandleFunc("PUT /api/providers/kilocode/models", kcH.UpdateModels)
 		mux.HandleFunc("POST /api/providers/kilocode/models/refresh", kcH.RefreshModels)
+		mux.HandleFunc("POST /api/providers/kilocode/models/custom", kcH.AddCustomModel)
+		mux.HandleFunc("DELETE /api/providers/kilocode/models/custom/{id...}", kcH.DeleteCustomModel)
+		mux.HandleFunc("DELETE /api/providers/kilocode/models/custom", kcH.DeleteCustomModel)
 		mux.HandleFunc("GET /api/providers/kilo/free-models", kcH.GetFreeModels)
 	}
 

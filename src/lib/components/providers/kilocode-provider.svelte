@@ -140,5 +140,7 @@
 		onToggleModel={(model, enabled) => kilocodeState.toggleModel(model.id, enabled)}
 		onToggleAll={(enabled) => kilocodeState.toggleAll(enabled)}
 		onSelectChatModel={(id) => (selectedChatModel = id)}
+		onAddModel={(data) => kilocodeState.addCustomModel(data)}
+		onDeleteModel={(id) => kilocodeState.deleteCustomModel(id)}
 	/>
 </div>

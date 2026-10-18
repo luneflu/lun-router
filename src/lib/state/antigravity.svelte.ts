@@ -12,6 +12,11 @@ import {
 	fetchAntigravityQuota,
 	type CreateAccountPayload
 } from '$lib/api/antigravity';
+import {
+	addCustomModel as apiAddCustomModel,
+	deleteCustomModel as apiDeleteCustomModel,
+	type CreateCustomModelPayload
+} from '$lib/api/providers';
 
 export class AntigravityState {
 	provider = 'antigravity';
@@ -158,6 +163,18 @@ export class AntigravityState {
 			this.models = prev;
 			throw e;
 		}
+	}
+
+	async addCustomModel(payload: CreateCustomModelPayload) {
+		const res = await apiAddCustomModel(this.provider, payload);
+		await this.load();
+		return res;
+	}
+
+	async deleteCustomModel(modelId: string) {
+		const res = await apiDeleteCustomModel(this.provider, modelId);
+		this.models = this.models.filter((m) => m.id !== modelId && m.id !== `antigravity/${modelId}`);
+		return res;
 	}
 }
 

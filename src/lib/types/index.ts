@@ -41,6 +41,7 @@ export interface ProviderModel {
 	object?: string;
 	owned_by?: string;
 	enabled: boolean;
+	is_custom?: boolean;
 	capabilities?: ModelCapabilities;
 	thinking_levels?: string[];
 	context_length?: number;

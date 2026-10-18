@@ -162,6 +162,71 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Custom models across providers
+	if h.modelStore != nil {
+		for _, cm := range h.modelStore.ListCustomModels("opencode") {
+			if !h.modelStore.IsDisabled("opencode", cm.ID) {
+				item := ModelItem{
+					ID:                  opencodePrefix + cm.ID,
+					Object:              "model",
+					OwnedBy:             "opencode",
+					Enabled:             true,
+					IsCustom:            true,
+					Capabilities:        cm.Capabilities,
+					ThinkingLevels:      cm.ThinkingLevels,
+					ContextLength:       cm.ContextLength,
+					MaxCompletionTokens: cm.MaxCompletionTokens,
+				}
+				if item.Capabilities == nil {
+					model.EnrichModelItem(&item, "opencode")
+				}
+				filtered = append(filtered, item)
+			}
+		}
+		if h.agClient != nil {
+			for _, cm := range h.modelStore.ListCustomModels("antigravity") {
+				if !h.modelStore.IsDisabled("antigravity", cm.ID) {
+					item := ModelItem{
+						ID:                  antigravityPrefix + cm.ID,
+						Object:              "model",
+						OwnedBy:             "antigravity",
+						Enabled:             true,
+						IsCustom:            true,
+						Capabilities:        cm.Capabilities,
+						ThinkingLevels:      cm.ThinkingLevels,
+						ContextLength:       cm.ContextLength,
+						MaxCompletionTokens: cm.MaxCompletionTokens,
+					}
+					if item.Capabilities == nil {
+						model.EnrichModelItem(&item, "antigravity")
+					}
+					filtered = append(filtered, item)
+				}
+			}
+		}
+		if h.kcClient != nil {
+			for _, cm := range h.modelStore.ListCustomModels("kilocode") {
+				if !h.modelStore.IsDisabled("kilocode", cm.ID) {
+					item := ModelItem{
+						ID:                  kilocodePrefix + cm.ID,
+						Object:              "model",
+						OwnedBy:             "kilocode",
+						Enabled:             true,
+						IsCustom:            true,
+						Capabilities:        cm.Capabilities,
+						ThinkingLevels:      cm.ThinkingLevels,
+						ContextLength:       cm.ContextLength,
+						MaxCompletionTokens: cm.MaxCompletionTokens,
+					}
+					if item.Capabilities == nil {
+						model.EnrichModelItem(&item, "kilocode")
+					}
+					filtered = append(filtered, item)
+				}
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"object": "list",
@@ -176,6 +241,26 @@ func (h *CompletionHandler) ProviderModels(w http.ResponseWriter, r *http.Reques
 	for i := range rawModels {
 		rawModels[i].Enabled = h.modelStore == nil || !h.modelStore.IsDisabled("opencode", rawModels[i].ID)
 		rawModels[i].ID = opencodePrefix + rawModels[i].ID
+	}
+
+	if h.modelStore != nil {
+		for _, cm := range h.modelStore.ListCustomModels("opencode") {
+			item := ModelItem{
+				ID:                  opencodePrefix + cm.ID,
+				Object:              "model",
+				OwnedBy:             "opencode",
+				Enabled:             !h.modelStore.IsDisabled("opencode", cm.ID),
+				IsCustom:            true,
+				Capabilities:        cm.Capabilities,
+				ThinkingLevels:      cm.ThinkingLevels,
+				ContextLength:       cm.ContextLength,
+				MaxCompletionTokens: cm.MaxCompletionTokens,
+			}
+			if item.Capabilities == nil {
+				model.EnrichModelItem(&item, "opencode")
+			}
+			rawModels = append(rawModels, item)
+		}
 	}
 
 	version := opencode.DefaultVersion
@@ -778,6 +863,14 @@ func (h *CompletionHandler) RefreshOpenCodeProxy(w http.ResponseWriter, r *http.
 }
 
 // PUT /api/providers/opencode/models (Toggle single or batch model enabled/disabled)
+func (h *CompletionHandler) AddCustomModel(w http.ResponseWriter, r *http.Request) {
+	handleAddCustomModel(h.modelStore, "opencode", w, r)
+}
+
+func (h *CompletionHandler) DeleteCustomModel(w http.ResponseWriter, r *http.Request) {
+	handleDeleteCustomModel(h.modelStore, "opencode", w, r)
+}
+
 func (h *CompletionHandler) UpdateProviderModels(w http.ResponseWriter, r *http.Request) {
 	if h.modelStore == nil {
 		http.Error(w, `{"error":"Model store not configured"}`, http.StatusInternalServerError)
@@ -1260,6 +1353,10 @@ func (h *CompletionHandler) isAntigravityModel(model string) bool {
 	if provider, _, ok := splitProviderPrefix(model); ok {
 		return provider == "antigravity"
 	}
+	clean := antigravity.CleanModelID(model)
+	if h.modelStore != nil && h.modelStore.HasCustomModel("antigravity", clean) {
+		return true
+	}
 	return antigravityShouldHandle(model, opencodeModelList(h.client))
 }
 
@@ -1292,10 +1389,13 @@ func (h *CompletionHandler) isKilocodeModel(model string) bool {
 	if provider, _, ok := splitProviderPrefix(model); ok {
 		return provider == "kilocode"
 	}
+	clean := kilocode.CleanModelID(model)
+	if h.modelStore != nil && h.modelStore.HasCustomModel("kilocode", clean) {
+		return true
+	}
 	if h.kcClient == nil {
 		return false
 	}
-	clean := kilocode.CleanModelID(model)
 	return h.kcClient.IsCatalogModel(clean)
 }
 

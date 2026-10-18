@@ -23,6 +23,7 @@ type ModelItem struct {
 	Object              string             `json:"object"`
 	OwnedBy             string             `json:"owned_by"`
 	Enabled             bool               `json:"enabled"`
+	IsCustom            bool               `json:"is_custom,omitempty"`
 	Capabilities        *ModelCapabilities `json:"capabilities,omitempty"`
 	ThinkingLevels      []string           `json:"thinking_levels,omitempty"`
 	ContextLength       int                `json:"context_length,omitempty"`

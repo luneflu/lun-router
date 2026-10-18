@@ -120,5 +120,7 @@
 		onToggleModel={(model, enabled) => antigravityState.toggleModel(model.id, enabled)}
 		onToggleAll={(enabled) => antigravityState.toggleAll(enabled)}
 		onSelectChatModel={(id) => (selectedChatModel = id)}
+		onAddModel={(data) => antigravityState.addCustomModel(data)}
+		onDeleteModel={(id) => antigravityState.deleteCustomModel(id)}
 	/>
 </div>

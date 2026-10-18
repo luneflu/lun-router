@@ -314,3 +314,48 @@ export async function updateZaiTools(payload: {
 	}
 	return res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Custom Models Management
+// ---------------------------------------------------------------------------
+
+export interface CreateCustomModelPayload {
+	id: string;
+	context_length?: number;
+	max_completion_tokens?: number;
+	vision?: boolean;
+	reasoning?: boolean;
+	tools?: boolean;
+	thinking_levels?: string[];
+}
+
+export async function addCustomModel(
+	provider: string,
+	payload: CreateCustomModelPayload
+): Promise<{ success: boolean; model: ProviderModel }> {
+	const res = await fetch(`/api/providers/${provider}/models/custom`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(payload)
+	});
+	if (!res.ok) {
+		const errData = await res.json().catch(() => ({}));
+		throw new Error(errData.error || `Failed to add custom model: ${res.statusText}`);
+	}
+	return res.json();
+}
+
+export async function deleteCustomModel(
+	provider: string,
+	modelId: string
+): Promise<{ success: boolean }> {
+	const cleanId = encodeURIComponent(modelId);
+	const res = await fetch(`/api/providers/${provider}/models/custom?id=${cleanId}`, {
+		method: 'DELETE'
+	});
+	if (!res.ok) {
+		const errData = await res.json().catch(() => ({}));
+		throw new Error(errData.error || `Failed to delete custom model: ${res.statusText}`);
+	}
+	return res.json();
+}

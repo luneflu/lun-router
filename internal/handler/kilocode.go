@@ -231,12 +231,40 @@ func (h *KiloCodeHandler) ListModels(w http.ResponseWriter, r *http.Request) {
 		models = append(models, item)
 	}
 
+	if h.modelStore != nil {
+		for _, cm := range h.modelStore.ListCustomModels("kilocode") {
+			item := ModelItem{
+				ID:                  kilocodePrefix + cm.ID,
+				Object:              "model",
+				OwnedBy:             "kilocode",
+				Enabled:             !h.modelStore.IsDisabled("kilocode", cm.ID),
+				IsCustom:            true,
+				Capabilities:        cm.Capabilities,
+				ThinkingLevels:      cm.ThinkingLevels,
+				ContextLength:       cm.ContextLength,
+				MaxCompletionTokens: cm.MaxCompletionTokens,
+			}
+			if item.Capabilities == nil {
+				model.EnrichModelItem(&item, "kilocode")
+			}
+			models = append(models, item)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"provider": "kilocode",
 		"models":   models,
 		"count":    len(models),
 	})
+}
+
+func (h *KiloCodeHandler) AddCustomModel(w http.ResponseWriter, r *http.Request) {
+	handleAddCustomModel(h.modelStore, "kilocode", w, r)
+}
+
+func (h *KiloCodeHandler) DeleteCustomModel(w http.ResponseWriter, r *http.Request) {
+	handleDeleteCustomModel(h.modelStore, "kilocode", w, r)
 }
 
 // POST /api/providers/kilocode/models/refresh
