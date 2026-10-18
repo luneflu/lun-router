@@ -59,14 +59,7 @@
 					<span class="text-muted-foreground">Providers</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
 					<span class="font-semibold text-foreground">Kilo Code</span>
-				{:else if activeView === 'chatgpt'}
-		<span class="text-muted-foreground/60">/</span>
-		<span class="text-foreground">ChatGPT Web</span>
-	{:else if activeView === 'zai'}
-		<span class="text-muted-foreground">Providers</span>
-		<ChevronRightIcon class="size-3 text-muted-foreground/60" />
-		<span class="font-semibold text-foreground">z.ai (GLM)</span>
-	{:else if activeView === 'token-saver'}
+				{:else if activeView === 'token-saver'}
 					<span class="text-muted-foreground">Optimization</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
 					<span class="font-semibold text-foreground">Token Saver</span>

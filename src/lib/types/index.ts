@@ -36,6 +36,8 @@ export interface ModelCapabilities {
 
 export interface ProviderModel {
 	id: string;
+	name?: string;
+	description?: string;
 	object?: string;
 	owned_by?: string;
 	enabled: boolean;

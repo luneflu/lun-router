@@ -8,12 +8,8 @@
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import XIcon from '@lucide/svelte/icons/x';
-	import SparklesIcon from '@lucide/svelte/icons/sparkles';
-	import BrainIcon from '@lucide/svelte/icons/brain';
 	import CodeIcon from '@lucide/svelte/icons/code';
 	import { Button } from '$lib/components/ui/button';
-	import { chatgptState } from '$lib/state/chatgpt.svelte';
-	import { zaiState } from '$lib/state/zai.svelte';
 
 	interface Props {
 		activeView: 'home' | 'usage' | 'opencode' | 'antigravity' | 'kilocode' | 'chatgpt' | 'zai' | 'token-saver';
@@ -250,71 +246,6 @@
 							{kilocodeEnabledModels}/{kilocodeTotalModels}
 						</span>
 					{/if}
-				</div>
-			</a>
-
-			<a
-				href="/chatgpt"
-				class={cn(
-					'flex items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition-colors',
-					activeView === 'chatgpt'
-						? 'bg-emerald-500/10 font-semibold text-emerald-500'
-						: 'text-muted-foreground hover:bg-muted hover:text-foreground'
-				)}
-				onclick={() => handleNavigate('chatgpt')}
-			>
-				<div class="flex items-center gap-2.5">
-					<div class="relative flex items-center justify-center">
-						<SparklesIcon class="size-4" />
-						<span
-							class={cn(
-								'absolute -end-0.5 -top-0.5 size-1.5 rounded-full',
-								chatgptState.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/40'
-							)}
-							title={chatgptState.enabled ? 'ChatGPT Web active' : 'Disabled (Default)'}
-						></span>
-					</div>
-					<div class="flex flex-col items-start text-start">
-						<span>ChatGPT Web</span>
-					</div>
-				</div>
-
-				<div class="flex items-center gap-1.5">
-					<span class="font-mono text-[10px] text-muted-foreground">
-						{chatgptState.enabled ? 'Active' : 'Off'}
-					</span>
-				</div>
-			</a>
-			<a
-				href="/zai"
-				class={cn(
-					'flex items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition-colors',
-					activeView === 'zai'
-						? 'bg-violet-500/10 font-semibold text-violet-500'
-						: 'text-muted-foreground hover:bg-muted hover:text-foreground'
-				)}
-				onclick={() => handleNavigate('zai')}
-			>
-				<div class="flex items-center gap-2.5">
-					<div class="relative flex items-center justify-center">
-						<BrainIcon class="size-4" />
-						<span
-							class={cn(
-								'absolute -end-0.5 -top-0.5 size-1.5 rounded-full',
-								zaiState.enabled ? 'bg-violet-500' : 'bg-muted-foreground/40'
-							)}
-							title={zaiState.enabled ? 'z.ai active' : 'Disabled (Default)'}
-						></span>
-					</div>
-					<div class="flex flex-col items-start text-start">
-						<span>z.ai (GLM)</span>
-					</div>
-				</div>
-
-				<div class="flex items-center gap-1.5">
-					<span class="font-mono text-[10px] text-muted-foreground">
-						{zaiState.enabled ? 'Active' : 'Off'}
-					</span>
 				</div>
 			</a>
 		</div>

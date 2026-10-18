@@ -20,6 +20,8 @@
 						<CheckCircle2Icon class="mt-0.5 size-4 shrink-0 text-emerald-500" />
 					{:else if item.type === 'error'}
 						<AlertCircleIcon class="mt-0.5 size-4 shrink-0 text-destructive" />
+					{:else if item.type === 'warning'}
+						<AlertCircleIcon class="mt-0.5 size-4 shrink-0 text-amber-500" />
 					{:else}
 						<InfoIcon class="mt-0.5 size-4 shrink-0 text-primary" />
 					{/if}

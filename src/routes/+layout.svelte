@@ -10,8 +10,6 @@
 	import { antigravityState } from '$lib/state/antigravity.svelte';
 	import { compactorState } from '$lib/state/compactor.svelte';
 	import { ponytailState } from '$lib/state/ponytail.svelte';
-	import { chatgptState } from '$lib/state/chatgpt.svelte';
-	import { zaiState } from '$lib/state/zai.svelte';
 	import { kilocodeState } from '$lib/state/kilocode.svelte';
 	import Sidebar from '$lib/components/sidebar/sidebar.svelte';
 	import Navbar from '$lib/components/navbar/navbar.svelte';
@@ -51,8 +49,6 @@
 		kilocodeState.load();
 		compactorState.load();
 		ponytailState.load();
-		chatgptState.load();
-		zaiState.load();
 	}
 
 	onMount(async () => {

@@ -1,6 +1,6 @@
 export interface ToastItem {
 	id: string;
-	type: 'success' | 'error' | 'info';
+	type: 'success' | 'error' | 'info' | 'warning';
 	title: string;
 	description?: string;
 }
@@ -26,6 +26,10 @@ export class ToastManager {
 
 	info(title: string, description?: string) {
 		this.show({ type: 'info', title, description });
+	}
+
+	warning(title: string, description?: string) {
+		this.show({ type: 'warning', title, description }, 4000);
 	}
 
 	dismiss(id: string) {
