@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import * as Card from '$lib/components/ui/card';
 	import * as Table from '$lib/components/ui/table';
 	import * as Select from '$lib/components/ui/select';
@@ -20,6 +21,14 @@
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import FlaskConicalIcon from '@lucide/svelte/icons/flask-conical';
 	import MessageSquareIcon from '@lucide/svelte/icons/message-square';
+	import GlobeIcon from '@lucide/svelte/icons/globe';
+	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
+	import {
+		fetchOpenCodeProxyStatus,
+		updateOpenCodeProxy,
+		refreshOpenCodeProxy,
+		type OpenCodeProxyStatus
+	} from '$lib/api/providers';
 
 	interface Props {
 		providerState: ProviderState;
@@ -39,6 +48,50 @@
 	let bulkToggling = $state(false);
 	let checkingVersion = $state(false);
 	let syncingModels = $state(false);
+
+	let proxyStatus = $state<OpenCodeProxyStatus | null>(null);
+	let refreshingProxy = $state(false);
+	let togglingProxy = $state(false);
+
+	async function loadProxyStatus() {
+		try {
+			proxyStatus = await fetchOpenCodeProxyStatus();
+		} catch {}
+	}
+
+	async function handleToggleProxy(checked: boolean) {
+		try {
+			togglingProxy = true;
+			proxyStatus = await updateOpenCodeProxy(checked);
+			toast.success('Proxy Updated', checked ? 'Proxy pool active' : 'Proxy pool standby (auto on 429)');
+		} catch (err: any) {
+			toast.error('Proxy Error', err.message);
+		} finally {
+			togglingProxy = false;
+		}
+	}
+
+	async function handleRefreshProxy() {
+		try {
+			refreshingProxy = true;
+			const res = await refreshOpenCodeProxy();
+			if (res.ok && res.status) {
+				proxyStatus = res.status;
+				toast.success(
+					'Proxies Updated',
+					`Fetched ${res.status.total_count} proxies (DE: ${res.status.germany_count}, EU: ${res.status.europe_count})`
+				);
+			} else {
+				toast.error('Proxy Refresh Failed', res.error || 'Failed');
+			}
+		} finally {
+			refreshingProxy = false;
+		}
+	}
+
+	onMount(() => {
+		loadProxyStatus();
+	});
 
 	async function handleSyncModels() {
 		try {
@@ -262,6 +315,92 @@
 			</div>
 		</Card.Header>
 	</Card.Root>
+
+	<!-- Geonode Proxy Status Cards -->
+	<div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+		<Card.Root>
+			<Card.Header class="pb-2">
+				<Card.Title class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+					<GlobeIcon class="size-4" />
+					Geonode Proxy Pool
+				</Card.Title>
+			</Card.Header>
+			<Card.Content>
+				<div class="flex items-baseline justify-between">
+					<span class="text-xl font-bold">
+						{proxyStatus?.total_count ?? 0} Proxies
+					</span>
+					<Badge variant="outline" class="text-xs">
+						DE: {proxyStatus?.germany_count ?? 0} • EU: {proxyStatus?.europe_count ?? 0}
+					</Badge>
+				</div>
+				<p class="mt-1 truncate text-xs text-muted-foreground">
+					Priority: Germany first, Europe second. Sorted by uptime & speed.
+				</p>
+			</Card.Content>
+		</Card.Root>
+
+		<Card.Root>
+			<Card.Header class="pb-2 flex flex-row items-center justify-between space-y-0">
+				<Card.Title class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+					<ShieldCheckIcon class="size-4" />
+					Free Limit Failover
+				</Card.Title>
+				<Switch
+					checked={proxyStatus?.enabled ?? false}
+					disabled={togglingProxy}
+					onCheckedChange={handleToggleProxy}
+				/>
+			</Card.Header>
+			<Card.Content>
+				<div class="flex items-baseline justify-between">
+					<span class="text-xl font-bold">
+						{proxyStatus?.enabled ? 'Always Active' : 'Auto on 429'}
+					</span>
+					<Badge variant={proxyStatus?.enabled ? 'default' : 'secondary'} class="text-xs">
+						{proxyStatus?.enabled ? 'Enforced' : 'Standby'}
+					</Badge>
+				</div>
+				<p class="mt-1 text-xs text-muted-foreground">
+					{proxyStatus?.enabled
+						? 'Routing all requests via proxy.'
+						: 'Auto-routes through proxy when free limit error occurs.'}
+				</p>
+			</Card.Content>
+		</Card.Root>
+
+		<Card.Root>
+			<Card.Header class="pb-2 flex flex-row items-center justify-between space-y-0">
+				<Card.Title class="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+					Active Routing
+				</Card.Title>
+				<Button
+					variant="ghost"
+					size="sm"
+					class="h-6 px-2 text-xs"
+					disabled={refreshingProxy}
+					onclick={handleRefreshProxy}
+				>
+					<RefreshCwIcon class={cn('size-3', refreshingProxy && 'animate-spin')} />
+					<span class="ml-1">Sync</span>
+				</Button>
+			</Card.Header>
+			<Card.Content>
+				<div class="flex items-baseline justify-between">
+					<span class="text-sm font-mono font-semibold truncate">
+						{proxyStatus?.active_proxy
+							? `${proxyStatus.active_proxy.ip}:${proxyStatus.active_proxy.port} (${proxyStatus.active_proxy.country})`
+							: 'Direct (No Proxy)'}
+					</span>
+				</div>
+				<p class="mt-1 text-xs text-muted-foreground">
+					{proxyStatus?.failed_count
+						? `${proxyStatus.failed_count} dead/rate-limited in cooldown`
+						: 'All healthy'}
+				</p>
+			</Card.Content>
+		</Card.Root>
+	</div>
 
 	<!-- Temporary Model Testing Chat -->
 	<ModelTestChat models={providerState.models} bind:selectedModelId={selectedChatModel} />

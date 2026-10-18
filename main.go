@@ -80,6 +80,14 @@ func main() {
 	vm.StartBackgroundSync(context.Background())
 
 	client := opencode.NewClient("", vm)
+	pm := opencode.NewProxyManager(dataDir)
+	client.SetProxyManager(pm)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		pm.EnsureLoaded(ctx)
+	}()
+
 	mm := opencode.NewModelManager(dataDir, client, 1*time.Hour)
 	mm.StartBackgroundSync(context.Background())
 	client.SetModelManager(mm)

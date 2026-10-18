@@ -707,6 +707,52 @@ func (h *CompletionHandler) RefreshVersion(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// GET /api/providers/opencode/proxy (Get proxy status and pool counts)
+func (h *CompletionHandler) OpenCodeProxyStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.client == nil || h.client.ProxyManager() == nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": false, "total_count": 0})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(h.client.ProxyManager().Status())
+}
+
+// PUT /api/providers/opencode/proxy (Enable / disable proxy routing)
+func (h *CompletionHandler) UpdateOpenCodeProxy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.client == nil || h.client.ProxyManager() == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "proxy manager not configured"})
+		return
+	}
+	var payload struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid payload"})
+		return
+	}
+	h.client.ProxyManager().SetEnabled(payload.Enabled)
+	_ = json.NewEncoder(w).Encode(h.client.ProxyManager().Status())
+}
+
+// POST /api/providers/opencode/proxy/refresh (Fetch fresh proxies from Geonode)
+func (h *CompletionHandler) RefreshOpenCodeProxy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.client == nil || h.client.ProxyManager() == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "proxy manager not configured"})
+		return
+	}
+	err := h.client.ProxyManager().Fetch(r.Context())
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "status": h.client.ProxyManager().Status()})
+}
+
 // PUT /api/providers/opencode/models (Toggle single or batch model enabled/disabled)
 func (h *CompletionHandler) UpdateProviderModels(w http.ResponseWriter, r *http.Request) {
 	if h.modelStore == nil {

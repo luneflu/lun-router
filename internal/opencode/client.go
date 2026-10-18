@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -20,7 +22,7 @@ import (
 const (
 	BaseURL    = "https://opencode.ai"
 	UA         = "opencode/1.18.35"
-	ClientType = "cli"
+	ClientType = "desktop"
 	Project    = "global"
 	Request    = "_msg"
 )
@@ -43,6 +45,7 @@ type Client struct {
 	sessionManager *SessionManager
 	versionManager *VersionManager
 	modelManager   *ModelManager
+	proxyManager   *ProxyManager
 }
 
 func NewClient(baseURL string, vm *VersionManager) *Client {
@@ -74,6 +77,14 @@ func (c *Client) ModelManager() *ModelManager {
 
 func (c *Client) SetModelManager(mm *ModelManager) {
 	c.modelManager = mm
+}
+
+func (c *Client) ProxyManager() *ProxyManager {
+	return c.proxyManager
+}
+
+func (c *Client) SetProxyManager(pm *ProxyManager) {
+	c.proxyManager = pm
 }
 
 // FetchModels retrieves the catalog from OpenCode Free (uses cached if available)
@@ -231,27 +242,163 @@ func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any, identi
 		sessionID = c.sessionManager.Get(identity)
 	}
 
-	resp, err := c.doRequest(ctx, targetURL, payloadBytes, sessionID)
+	// Pick initial HTTP client (direct connection)
+	var initialClient *http.Client
+	/* Proxy rotation commented out - keeping original IP
+	if c.canUseProxy(targetURL) && c.proxyManager.IsEnabled() {
+		initialClient = c.proxyManager.GetActiveClient()
+		if initialClient == nil {
+			if nextP := c.proxyManager.NextProxy(); nextP != nil {
+				initialClient, _ = c.proxyManager.ClientForProxy(nextP)
+			}
+		}
+	}
+	*/
+
+	resp, err := c.doRequest(ctx, targetURL, payloadBytes, sessionID, initialClient)
 	if err != nil {
+		/* Proxy retry commented out
+		if c.canUseProxy(targetURL) && initialClient != nil {
+			if act := c.proxyManager.ActiveProxy(); act != nil {
+				c.proxyManager.MarkFailed(act, err.Error())
+			}
+			return c.executeWithProxyRetry(ctx, targetURL, payloadBytes, sessionID)
+		}
+		*/
 		return nil, err
 	}
 
-	// If rate-limited (429): rotate session and immediately retry once with fresh session
-	if resp.StatusCode == http.StatusTooManyRequests {
+	// If rate-limited (429 / free usage limit error): rotate session ID and retry once directly
+	if c.isFreeLimit(resp) {
 		resp.Body.Close()
 
 		newSessionID := c.sessionManager.Rotate(identity)
-		return c.doRequest(ctx, targetURL, payloadBytes, newSessionID)
+		log.Printf("[opencode] rate limit hit (429). Rotated session to %s, retrying directly...", newSessionID)
+
+		/* Proxy failover commented out
+		if c.canUseProxy(targetURL) {
+			log.Printf("[opencode] free limit or IP gate hit (%d). Switching to proxy pool (DE/Europe priority)...", resp.StatusCode)
+			c.proxyManager.EnsureLoaded(ctx)
+			return c.executeWithProxyRetry(ctx, targetURL, payloadBytes, newSessionID)
+		}
+		*/
+
+		// Direct retry with fresh session ID
+		return c.doRequest(ctx, targetURL, payloadBytes, newSessionID, nil)
 	}
 
 	return resp, nil
 }
 
-func (c *Client) doRequest(ctx context.Context, targetURL string, payloadBytes []byte, sessionID string) (*http.Response, error) {
+func (c *Client) isFreeLimit(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	return resp.StatusCode == http.StatusTooManyRequests
+}
+
+func (c *Client) isFreeLimitOrBlocked(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden
+}
+
+func isLocalhost(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+}
+
+func (c *Client) canUseProxy(targetURL string) bool {
+	if c.proxyManager == nil {
+		return false
+	}
+	// If target is localhost, only allow if configured proxy is also localhost (e.g. in tests)
+	if isLocalhost(targetURL) {
+		p := c.proxyManager.ActiveProxy()
+		if p == nil {
+			p = c.proxyManager.NextProxy()
+		}
+		if p == nil || !isLocalhost("http://"+p.Key()) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Client) executeWithProxyRetry(ctx context.Context, targetURL string, payloadBytes []byte, sessionID string) (*http.Response, error) {
+	const maxProxyAttempts = 5
+	var lastErr error
+
+	for attempt := 0; attempt < maxProxyAttempts; attempt++ {
+		proxy := c.proxyManager.NextProxy()
+		if proxy == nil {
+			break
+		}
+
+		proxyClient, err := c.proxyManager.ClientForProxy(proxy)
+		if err != nil {
+			c.proxyManager.MarkFailed(proxy, err.Error())
+			continue
+		}
+
+		log.Printf("[opencode-proxy] attempt %d/%d via %s (%s, prio=%d, uptime=%.1f%%, resp=%.0fms)",
+			attempt+1, maxProxyAttempts, proxy.Key(), proxy.Country, proxy.Priority, proxy.UpTime, proxy.EffectiveLatency())
+
+		resp, err := c.doRequest(ctx, targetURL, payloadBytes, sessionID, proxyClient)
+		if err != nil {
+			log.Printf("[opencode-proxy] proxy %s failed: %v", proxy.Key(), err)
+			c.proxyManager.MarkFailed(proxy, err.Error())
+			lastErr = err
+			continue
+		}
+
+		if c.isFreeLimitOrBlocked(resp) {
+			resp.Body.Close()
+			log.Printf("[opencode-proxy] proxy %s also returned %d", proxy.Key(), resp.StatusCode)
+			c.proxyManager.MarkFailed(proxy, fmt.Sprintf("status %d", resp.StatusCode))
+			sessionID = c.sessionManager.Rotate(sessionID)
+			continue
+		}
+
+		// Succeeded!
+		c.proxyManager.MarkSuccess(proxy)
+		log.Printf("[opencode-proxy] success via proxy %s (%s)", proxy.Key(), proxy.Country)
+		return resp, nil
+	}
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("all proxy attempts failed: %w", lastErr)
+	}
+	return nil, fmt.Errorf("all proxy attempts returned rate limit (429)")
+}
+
+func generateRequestID() string {
+	nowMs := time.Now().UnixMilli()
+	val := uint64(nowMs*4096 + 1)
+	timePart := fmt.Sprintf("%012x", val&0xFFFFFFFFFFFF)
+
+	randomBytes := make([]byte, 14)
+	_, _ = rand.Read(randomBytes)
+	var randomPart strings.Builder
+	for _, b := range randomBytes {
+		randomPart.WriteByte(base62Chars[int(b)%62])
+	}
+
+	return fmt.Sprintf("msg_%s%s", timePart, randomPart.String())
+}
+
+func (c *Client) doRequest(ctx context.Context, targetURL string, payloadBytes []byte, sessionID string, httpClient *http.Client) (*http.Response, error) {
 	upReq, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(payloadBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+
+	reqID := generateRequestID()
 
 	// Aligned Custom Headers for OpenCode Free v2 (/inference/v1)
 	upReq.Header.Set("User-Agent", c.versionManager.GetUserAgent())
@@ -259,13 +406,17 @@ func (c *Client) doRequest(ctx context.Context, targetURL string, payloadBytes [
 	upReq.Header.Set("x-opencode-project", Project)
 	upReq.Header.Set("x-opencode-session", sessionID)
 	upReq.Header.Set("x-opencode-session-id", sessionID)
+	upReq.Header.Set("x-opencode-request", reqID)
 	upReq.Header.Set("x-session-affinity", sessionID)
 	upReq.Header.Set("X-Session-Id", sessionID)
 	upReq.Header.Set("Authorization", "Bearer public")
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Accept", "text/event-stream")
 
-	return c.httpClient.Do(upReq)
+	if httpClient == nil {
+		httpClient = c.httpClient
+	}
+	return httpClient.Do(upReq)
 }
 
 // AggregateSSEStream parses incoming SSE stream into a standard OpenAI ChatCompletion response
