@@ -290,9 +290,9 @@ func (s *Service) Apply(body map[string]any, headerCaveman, headerMode string) b
 func shortCavemanReminder(mode, custom string) string {
 	switch mode {
 	case "ultracave":
-		return "[System directive reminder: Ultracave mode active. Grammar stripped, fragments only, zero fluff. Technical payload verbatim.]"
+		return "[System directive reminder: Ultracave mode active. Internal thinking and response: grammar stripped, fragments only, zero fluff. Technical payload verbatim.]"
 	case "megacave":
-		return "[System directive reminder: Megacave (文言文) active. 以文言答，去贅言，代碼命令精確保留。]"
+		return "[System directive reminder: Megacave (文言文) active. 內部思考（thinking）與回覆皆純以文言文深思，去贅言。代碼命令精確保留。]"
 	case "custom":
 		firstLine := strings.TrimSpace(strings.Split(custom, "\n")[0])
 		if len(firstLine) > 100 {
@@ -301,9 +301,9 @@ func shortCavemanReminder(mode, custom string) string {
 		if firstLine != "" {
 			return fmt.Sprintf("[System directive reminder: %s]", firstLine)
 		}
-		return "[System directive reminder: Caveman mode active. Terse, direct, zero fluff. Technical payload verbatim.]"
+		return "[System directive reminder: Caveman mode active. Internal thinking and response: terse, direct, zero fluff. Technical payload verbatim.]"
 	default:
-		return "[System directive reminder: Caveman mode active. Terse, direct, zero fluff. Kill ceremony. Technical payload verbatim.]"
+		return "[System directive reminder: Caveman mode active. Internal thinking and response: terse, direct, zero fluff, kill ceremony. Technical payload verbatim.]"
 	}
 }
 
