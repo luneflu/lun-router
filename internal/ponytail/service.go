@@ -223,14 +223,21 @@ func (s *Service) Apply(body map[string]any, headerPonytail, headerMode string) 
 	}
 
 	prompt := activePrompt(mode, custom)
-
 	ponytailInstruction := "\n\n[System directive: Lazy Senior Developer Guidance (" + mode + ")]\n" + prompt + standaloneTail
+	reminder := shortPonytailReminder(mode, custom)
 
 	// 1. Anthropic-style top-level "system"
 	if rawSys, ok := body["system"]; ok {
 		if sysStr, ok := rawSys.(string); ok && sysStr != "" {
 			body["system"] = sysStr + ponytailInstruction
 			s.injectedRequests.Add(1)
+			if rawMsgs, ok := body["messages"]; ok {
+				if msgs, ok := rawMsgs.([]any); ok && shouldAnchorTail(msgs) {
+					if appendTailReminder(msgs, reminder) {
+						body["messages"] = msgs
+					}
+				}
+			}
 			return true
 		}
 	}
@@ -273,7 +280,130 @@ func (s *Service) Apply(body map[string]any, headerPonytail, headerMode string) 
 		msgs = append([]any{newSys}, msgs...)
 	}
 
+	// Tail reinforcement: anchor reminder at the last user message when context is long or multi-turn
+	if shouldAnchorTail(msgs) {
+		appendTailReminder(msgs, reminder)
+	}
+
 	body["messages"] = msgs
 	s.injectedRequests.Add(1)
 	return true
+}
+
+func shortPonytailReminder(mode, custom string) string {
+	switch mode {
+	case "ultra":
+		return "[System directive reminder: Ponytail Ultra active. Maximum pushback, shortest working diff, no bloat. End reply with: skipped: [X], add when [Y].]"
+	case "review":
+		return "[System directive reminder: Ponytail Review active. Order: correct, safe, load, tested, fast, lean. Flag over-engineering.]"
+	case "custom":
+		firstLine := strings.TrimSpace(strings.Split(custom, "\n")[0])
+		if len(firstLine) > 100 {
+			firstLine = firstLine[:100] + "..."
+		}
+		if firstLine != "" {
+			return fmt.Sprintf("[System directive reminder: %s]", firstLine)
+		}
+		return "[System directive reminder: Ponytail active. Lazy senior dev: shortest complete change, no bloat. End reply with: skipped: [X], add when [Y].]"
+	default:
+		return "[System directive reminder: Ponytail mode active. Lazy senior dev: shortest complete change, no bloat/abstractions. End reply with: skipped: [X], add when [Y].]"
+	}
+}
+
+func shouldAnchorTail(msgs []any) bool {
+	hasAssistant := false
+	nonSystemCount := 0
+	totalChars := 0
+
+	for _, m := range msgs {
+		msgMap, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := msgMap["role"].(string)
+		if role == "assistant" {
+			hasAssistant = true
+		}
+		if role == "system" {
+			continue
+		}
+		nonSystemCount++
+		switch c := msgMap["content"].(type) {
+		case string:
+			totalChars += len(c)
+		case []any:
+			for _, part := range c {
+				if partMap, ok := part.(map[string]any); ok {
+					if txt, ok := partMap["text"].(string); ok {
+						totalChars += len(txt)
+					}
+				}
+			}
+		}
+	}
+
+	// Anchor if prior conversation exists, or non-system context is substantial (> 2000 chars)
+	return hasAssistant || nonSystemCount >= 2 || totalChars >= 2000
+}
+
+func appendTailReminder(msgs []any, reminder string) bool {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msgMap, ok := msgs[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := msgMap["role"].(string)
+		if role != "user" {
+			continue
+		}
+
+		switch content := msgMap["content"].(type) {
+		case string:
+			if strings.Contains(content, "[System directive reminder:") {
+				if strings.Contains(content, reminder) {
+					return false
+				}
+				msgMap["content"] = content + "\n" + reminder
+				msgs[i] = msgMap
+				return true
+			}
+			msgMap["content"] = content + "\n\n" + reminder
+			msgs[i] = msgMap
+			return true
+		case []any:
+			for _, part := range content {
+				if partMap, ok := part.(map[string]any); ok {
+					if txt, ok := partMap["text"].(string); ok && strings.Contains(txt, reminder) {
+						return false
+					}
+				}
+			}
+			appended := false
+			for j := len(content) - 1; j >= 0; j-- {
+				if part, ok := content[j].(map[string]any); ok {
+					if partType, ok := part["type"].(string); ok && partType == "text" {
+						if txt, ok := part["text"].(string); ok {
+							if strings.Contains(txt, "[System directive reminder:") {
+								part["text"] = txt + "\n" + reminder
+							} else {
+								part["text"] = txt + "\n\n" + reminder
+							}
+							appended = true
+							break
+						}
+					}
+				}
+			}
+			if !appended {
+				content = append(content, map[string]any{
+					"type": "text",
+					"text": reminder,
+				})
+				msgMap["content"] = content
+			}
+			msgs[i] = msgMap
+			return true
+		}
+	}
+	return false
 }

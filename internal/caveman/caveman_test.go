@@ -270,3 +270,80 @@ func TestCavemanRejectsUnknownMode(t *testing.T) {
 		t.Errorf("expected the unknown mode ignored, got %s", mode)
 	}
 }
+
+func TestCavemanTailReinforcement(t *testing.T) {
+	s := newTestService(t)
+
+	// Case 1: Short 1-turn chat: user message should NOT have tail reminder
+	bodySingle := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "Hello world"},
+		},
+	}
+	if !s.Apply(bodySingle, "", "") {
+		t.Fatal("expected apply true")
+	}
+	msgs := bodySingle["messages"].([]any)
+	userMsg := msgs[1].(map[string]any)
+	if strings.Contains(userMsg["content"].(string), "[System directive reminder:") {
+		t.Errorf("expected no tail reminder on short single user message, got %v", userMsg["content"])
+	}
+
+	// Case 2: Multi-turn chat: last user message MUST have tail reminder
+	bodyMulti := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "How do I do X?"},
+			map[string]any{"role": "assistant", "content": "Here is how you do X with many words..."},
+			map[string]any{"role": "user", "content": "Now explain step 2"},
+		},
+	}
+	if !s.Apply(bodyMulti, "", "ultracave") {
+		t.Fatal("expected apply true")
+	}
+	msgsMulti := bodyMulti["messages"].([]any)
+	lastUser := msgsMulti[len(msgsMulti)-1].(map[string]any)
+	lastContent := lastUser["content"].(string)
+	if !strings.Contains(lastContent, "[System directive reminder: Ultracave mode active.") {
+		t.Errorf("expected ultracave tail reminder in last user message, got %v", lastContent)
+	}
+
+	// Case 3: Long prompt (> 2000 chars) single user message: MUST have tail reminder
+	longContent := strings.Repeat("very long context information ", 100)
+	bodyLong := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": longContent},
+		},
+	}
+	if !s.Apply(bodyLong, "", "caveman") {
+		t.Fatal("expected apply true")
+	}
+	msgsLong := bodyLong["messages"].([]any)
+	longUser := msgsLong[len(msgsLong)-1].(map[string]any)
+	if !strings.Contains(longUser["content"].(string), "[System directive reminder: Caveman mode active.") {
+		t.Errorf("expected caveman tail reminder in long user prompt")
+	}
+
+	// Case 4: Structured content parts array
+	bodyArray := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "assistant", "content": "Hi"},
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "text", "text": "Check this"},
+				},
+			},
+		},
+	}
+	if !s.Apply(bodyArray, "", "caveman") {
+		t.Fatal("expected apply true")
+	}
+	msgsArray := bodyArray["messages"].([]any)
+	lastPartUser := msgsArray[len(msgsArray)-1].(map[string]any)
+	parts := lastPartUser["content"].([]any)
+	textPart := parts[0].(map[string]any)
+	if !strings.Contains(textPart["text"].(string), "[System directive reminder: Caveman mode active.") {
+		t.Errorf("expected tail reminder in structured text part, got %v", textPart["text"])
+	}
+}
+

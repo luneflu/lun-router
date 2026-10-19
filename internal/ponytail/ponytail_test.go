@@ -278,3 +278,41 @@ func TestPonytailRejectsUnknownMode(t *testing.T) {
 		t.Errorf("expected the unknown mode ignored, got %s", mode)
 	}
 }
+
+func TestPonytailTailReinforcement(t *testing.T) {
+	s := newTestService(t)
+
+	// Case 1: Short 1-turn chat: user message should NOT have tail reminder
+	bodySingle := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "Hello world"},
+		},
+	}
+	if !s.Apply(bodySingle, "", "") {
+		t.Fatal("expected apply true")
+	}
+	msgs := bodySingle["messages"].([]any)
+	userMsg := msgs[1].(map[string]any)
+	if strings.Contains(userMsg["content"].(string), "[System directive reminder:") {
+		t.Errorf("expected no tail reminder on short single user message, got %v", userMsg["content"])
+	}
+
+	// Case 2: Multi-turn chat: last user message MUST have tail reminder
+	bodyMulti := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "How do I do X?"},
+			map[string]any{"role": "assistant", "content": "Here is how you do X with many words..."},
+			map[string]any{"role": "user", "content": "Now write the code"},
+		},
+	}
+	if !s.Apply(bodyMulti, "", "ultra") {
+		t.Fatal("expected apply true")
+	}
+	msgsMulti := bodyMulti["messages"].([]any)
+	lastUser := msgsMulti[len(msgsMulti)-1].(map[string]any)
+	lastContent := lastUser["content"].(string)
+	if !strings.Contains(lastContent, "[System directive reminder: Ponytail Ultra active.") {
+		t.Errorf("expected ponytail ultra tail reminder in last user message, got %v", lastContent)
+	}
+}
+
