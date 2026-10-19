@@ -10,7 +10,16 @@
 
 	interface Props {
 		error: string | null;
-		activeView: 'home' | 'usage' | 'opencode' | 'antigravity' | 'kilocode' | 'chatgpt' | 'zai' | 'token-saver';
+		activeView:
+			| 'home'
+			| 'usage'
+			| 'opencode'
+			| 'antigravity'
+			| 'kilocode'
+			| 'chatgpt'
+			| 'zai'
+			| 'token-saver'
+			| 'custom-providers';
 		onToggleMobileMenu?: () => void;
 	}
 
@@ -59,6 +68,10 @@
 					<span class="text-muted-foreground">Providers</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
 					<span class="font-semibold text-foreground">Kilo Code</span>
+				{:else if activeView === 'custom-providers'}
+					<span class="text-muted-foreground">Providers</span>
+					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
+					<span class="font-semibold text-foreground">Custom Providers</span>
 				{:else if activeView === 'token-saver'}
 					<span class="text-muted-foreground">Optimization</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />

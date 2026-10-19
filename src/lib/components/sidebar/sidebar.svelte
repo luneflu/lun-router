@@ -9,11 +9,32 @@
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import XIcon from '@lucide/svelte/icons/x';
 	import CodeIcon from '@lucide/svelte/icons/code';
+	import ServerIcon from '@lucide/svelte/icons/server';
 	import { Button } from '$lib/components/ui/button';
 
 	interface Props {
-		activeView: 'home' | 'usage' | 'opencode' | 'antigravity' | 'kilocode' | 'chatgpt' | 'zai' | 'token-saver';
-		onSelectView?: (view: 'home' | 'usage' | 'opencode' | 'antigravity' | 'kilocode' | 'chatgpt' | 'zai' | 'token-saver') => void;
+		activeView:
+			| 'home'
+			| 'usage'
+			| 'opencode'
+			| 'antigravity'
+			| 'kilocode'
+			| 'chatgpt'
+			| 'zai'
+			| 'token-saver'
+			| 'custom-providers';
+		onSelectView?: (
+			view:
+				| 'home'
+				| 'usage'
+				| 'opencode'
+				| 'antigravity'
+				| 'kilocode'
+				| 'chatgpt'
+				| 'zai'
+				| 'token-saver'
+				| 'custom-providers'
+		) => void;
 		totalKeys: number;
 		enabledModels: number;
 		totalModels: number;
@@ -23,6 +44,8 @@
 		kilocodeAccounts?: number;
 		kilocodeEnabledModels?: number;
 		kilocodeTotalModels?: number;
+		customProvidersCount?: number;
+		customProvidersTotalModels?: number;
 		mobileOpen: boolean;
 		onCloseMobile: () => void;
 	}
@@ -39,11 +62,24 @@
 		kilocodeAccounts = 0,
 		kilocodeEnabledModels = 0,
 		kilocodeTotalModels = 0,
+		customProvidersCount = 0,
+		customProvidersTotalModels = 0,
 		mobileOpen,
 		onCloseMobile
 	}: Props = $props();
 
-	function handleNavigate(view: 'home' | 'usage' | 'opencode' | 'antigravity' | 'kilocode' | 'chatgpt' | 'zai' | 'token-saver') {
+	function handleNavigate(
+		view:
+			| 'home'
+			| 'usage'
+			| 'opencode'
+			| 'antigravity'
+			| 'kilocode'
+			| 'chatgpt'
+			| 'zai'
+			| 'token-saver'
+			| 'custom-providers'
+	) {
 		onSelectView?.(view);
 		onCloseMobile();
 	}
@@ -143,7 +179,10 @@
 					Providers
 				</span>
 				<span class="font-mono text-[10px] text-muted-foreground">
-					{1 + (antigravityAccounts > 0 ? 1 : 0) + (kilocodeAccounts > 0 ? 1 : 0)} active
+					{1 +
+						(antigravityAccounts > 0 ? 1 : 0) +
+						(kilocodeAccounts > 0 ? 1 : 0) +
+						(customProvidersCount > 0 ? 1 : 0)} active
 				</span>
 			</div>
 
@@ -245,6 +284,47 @@
 						<span class="font-mono text-[10px] text-muted-foreground">
 							{kilocodeEnabledModels}/{kilocodeTotalModels}
 						</span>
+					{/if}
+				</div>
+			</a>
+
+			<a
+				href="/custom-providers"
+				class={cn(
+					'flex items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition-colors',
+					activeView === 'custom-providers'
+						? 'bg-primary/10 font-semibold text-primary'
+						: 'text-muted-foreground hover:bg-muted hover:text-foreground'
+				)}
+				onclick={() => handleNavigate('custom-providers')}
+			>
+				<div class="flex items-center gap-2.5">
+					<div class="relative flex items-center justify-center">
+						<ServerIcon class="size-4" />
+						<span
+							class={cn(
+								'absolute -end-0.5 -top-0.5 size-1.5 rounded-full',
+								customProvidersCount > 0 ? 'bg-emerald-500' : 'bg-muted-foreground/40'
+							)}
+							title={customProvidersCount > 0
+								? `${customProvidersCount} active custom providers`
+								: 'No custom providers configured'}
+						></span>
+					</div>
+					<div class="flex flex-col items-start text-start">
+						<span>Custom Providers</span>
+					</div>
+				</div>
+
+				<div class="flex items-center gap-1.5">
+					{#if customProvidersTotalModels > 0}
+						<span class="font-mono text-[10px] text-muted-foreground">
+							{customProvidersTotalModels}
+						</span>
+					{:else if customProvidersCount > 0}
+						<Badge variant="outline" class="px-1 py-0 font-mono text-[9px]">
+							{customProvidersCount}
+						</Badge>
 					{/if}
 				</div>
 			</a>

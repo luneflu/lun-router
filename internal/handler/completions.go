@@ -16,6 +16,7 @@ import (
 	"lun-router/internal/caveman"
 	"lun-router/internal/chatgpt"
 	"lun-router/internal/compactor"
+	"lun-router/internal/customprovider"
 	"lun-router/internal/kilocode"
 	"lun-router/internal/model"
 	"lun-router/internal/opencode"
@@ -33,6 +34,8 @@ type CompletionHandler struct {
 	cgClient         *chatgpt.Client
 	zaiClient        *zai.Client
 	kcClient         *kilocode.Client
+	customStore      *customprovider.Store
+	customClient     *customprovider.Client
 	compactorService *compactor.Service
 	cavemanService   *caveman.Service
 	ponytailService  *ponytail.Service
@@ -57,6 +60,12 @@ func (h *CompletionHandler) SetZai(c *zai.Client) {
 // SetKiloCode attaches the Kilo Code provider client.
 func (h *CompletionHandler) SetKiloCode(c *kilocode.Client) {
 	h.kcClient = c
+}
+
+// SetCustomProviders attaches the custom provider store and client.
+func (h *CompletionHandler) SetCustomProviders(s *customprovider.Store, c *customprovider.Client) {
+	h.customStore = s
+	h.customClient = c
 }
 
 func NewCompletionHandler(s *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service) *CompletionHandler {
@@ -222,6 +231,54 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 						model.EnrichModelItem(&item, "kilocode")
 					}
 					filtered = append(filtered, item)
+				}
+			}
+		}
+	}
+
+	// Custom providers models
+	if h.customStore != nil {
+		for _, cp := range h.customStore.List() {
+			if !cp.IsEnabled {
+				continue
+			}
+			prefix := cp.Prefix + "/"
+			seenModels := make(map[string]bool)
+			for _, m := range cp.Models {
+				seenModels[m] = true
+				if h.modelStore == nil || !h.modelStore.IsDisabled(cp.Prefix, m) {
+					item := ModelItem{
+						ID:      prefix + m,
+						Object:  "model",
+						OwnedBy: cp.Prefix,
+						Enabled: true,
+					}
+					model.EnrichModelItem(&item, cp.Prefix)
+					filtered = append(filtered, item)
+				}
+			}
+			if h.modelStore != nil {
+				for _, cm := range h.modelStore.ListCustomModels(cp.Prefix) {
+					if !seenModels[cm.ID] {
+						seenModels[cm.ID] = true
+						if !h.modelStore.IsDisabled(cp.Prefix, cm.ID) {
+							item := ModelItem{
+								ID:                  prefix + cm.ID,
+								Object:              "model",
+								OwnedBy:             cp.Prefix,
+								Enabled:             true,
+								IsCustom:            true,
+								Capabilities:        cm.Capabilities,
+								ThinkingLevels:      cm.ThinkingLevels,
+								ContextLength:       cm.ContextLength,
+								MaxCompletionTokens: cm.MaxCompletionTokens,
+							}
+							if item.Capabilities == nil {
+								model.EnrichModelItem(&item, cp.Prefix)
+							}
+							filtered = append(filtered, item)
+						}
+					}
 				}
 			}
 		}
@@ -943,7 +1000,7 @@ func (h *CompletionHandler) pingSingleModel(ctx context.Context, model string, p
 	}
 
 	// Antigravity Model Test
-	provider, bareModel, _ := splitProviderPrefix(model)
+	provider, bareModel, _ := h.splitProviderPrefix(model)
 	if provider == "antigravity" || (provider == "" && h.isAntigravityModel(model)) {
 		cleanModel := antigravity.CleanModelID(bareModel)
 		if h.modelStore != nil && h.modelStore.IsDisabled("antigravity", cleanModel) {
@@ -1157,6 +1214,75 @@ func (h *CompletionHandler) pingSingleModel(ctx context.Context, model string, p
 		}
 
 		upResp, err := h.cgClient.ExecuteChat(mCtx, testBody, false)
+		latencyMs := time.Since(start).Milliseconds()
+		if err != nil {
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     err.Error(),
+				LatencyMs: latencyMs,
+			}
+		}
+		defer upResp.Body.Close()
+
+		if upResp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(upResp.Body)
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     string(bodyBytes),
+				LatencyMs: latencyMs,
+				Status:    upResp.StatusCode,
+			}
+		}
+
+		return ModelTestResult{
+			OK:        true,
+			Model:     model,
+			LatencyMs: latencyMs,
+		}
+	}
+
+	// Custom Provider Model Test
+	if cp, cleanModel, isCustom := h.findCustomProvider(provider, bareModel); isCustom {
+		if !cp.IsEnabled {
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     fmt.Sprintf("Provider '%s' is disabled", cp.Name),
+				LatencyMs: 0,
+			}
+		}
+
+		if h.modelStore != nil && h.modelStore.IsDisabled(cp.Prefix, cleanModel) {
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     fmt.Sprintf("Model '%s' is disabled for provider %s", model, cp.Prefix),
+				LatencyMs: 0,
+			}
+		}
+
+		if h.customClient == nil {
+			return ModelTestResult{
+				OK:    false,
+				Model: model,
+				Error: "Custom provider client not initialized",
+			}
+		}
+
+		mCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		start := time.Now()
+		testBody := map[string]any{
+			"model": cleanModel,
+			"messages": []map[string]string{
+				{"role": "user", "content": prompt},
+			},
+		}
+
+		upResp, err := h.customClient.ExecuteChat(mCtx, cp, testBody, false)
 		latencyMs := time.Since(start).Milliseconds()
 		if err != nil {
 			return ModelTestResult{
@@ -1402,6 +1528,18 @@ func (h *CompletionHandler) isKilocodeModel(model string) bool {
 // splitProviderPrefix resolves an explicit provider namespace. ok is false for a
 // bare ID, which keeps catalog-based routing.
 func splitProviderPrefix(model string) (provider, id string, ok bool) {
+	return splitProviderPrefixWithStore(model, nil)
+}
+
+func (h *CompletionHandler) splitProviderPrefix(model string) (provider, id string, ok bool) {
+	var store *customprovider.Store
+	if h != nil {
+		store = h.customStore
+	}
+	return splitProviderPrefixWithStore(model, store)
+}
+
+func splitProviderPrefixWithStore(model string, cpStore *customprovider.Store) (provider, id string, ok bool) {
 	switch {
 	case strings.HasPrefix(model, opencodePrefix):
 		return "opencode", strings.TrimPrefix(model, opencodePrefix), true
@@ -1414,8 +1552,33 @@ func splitProviderPrefix(model string) (provider, id string, ok bool) {
 	case kilocode.HasKilocodePrefix(model):
 		return "kilocode", kilocode.CleanModelID(model), true
 	default:
+		if cpStore != nil {
+			if slashIdx := strings.Index(model, "/"); slashIdx > 0 {
+				prefix := model[:slashIdx]
+				if cp, ok := cpStore.GetByPrefix(prefix); ok {
+					return cp.Prefix, model[slashIdx+1:], true
+				}
+			}
+		}
 		return "", model, false
 	}
+}
+
+func (h *CompletionHandler) findCustomProvider(providerPrefix, model string) (customprovider.Provider, string, bool) {
+	if h.customStore == nil {
+		return customprovider.Provider{}, "", false
+	}
+	if providerPrefix != "" {
+		if cp, ok := h.customStore.GetByPrefix(providerPrefix); ok {
+			cleanModel := customprovider.CleanModelID(cp.Prefix, model)
+			return cp, cleanModel, true
+		}
+	}
+	// Bare model fallback: see if any enabled custom provider has it
+	if cp, ok := h.customStore.FindByModel(model); ok {
+		return cp, model, true
+	}
+	return customprovider.Provider{}, "", false
 }
 
 func cleanOpenCodeID(model string) string {
@@ -1542,7 +1705,7 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	requestedModel := model
-	modelProvider, bareModel, prefixed := splitProviderPrefix(model)
+	modelProvider, bareModel, prefixed := h.splitProviderPrefix(model)
 	if prefixed {
 		model = bareModel
 	}
@@ -1912,6 +2075,100 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.Copy(w, upResp.Body)
+		return
+	}
+
+	// Check if this is a custom provider model
+	if cp, cleanModel, isCustom := h.findCustomProvider(modelProvider, model); isCustom {
+		if !cp.IsEnabled {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Provider '%s' is disabled", cp.Name),
+					"type":    "invalid_request_error",
+				},
+			})
+			return
+		}
+
+		if h.modelStore != nil && h.modelStore.IsDisabled(cp.Prefix, cleanModel) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Model '%s' is disabled for provider %s", cleanModel, cp.Prefix),
+					"type":    "invalid_request_error",
+				},
+			})
+			return
+		}
+
+		if h.customClient == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": "Custom provider client not initialized",
+					"type":    "api_error",
+				},
+			})
+			return
+		}
+
+		ev.Provider = cp.Prefix
+		ev.Account = cp.Name
+
+		upResp, err := h.customClient.ExecuteChat(r.Context(), cp, bodyMap, clientWantsStream)
+		if err != nil {
+			ev.Err = "upstream_error"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Upstream %s error: %v", cp.Name, err),
+					"type":    "api_error",
+				},
+			})
+			return
+		}
+		ev.UpMs = time.Since(reqStart).Milliseconds()
+		defer upResp.Body.Close()
+
+		if upResp.StatusCode != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(upResp.StatusCode)
+			bodyBytes, _ := io.ReadAll(upResp.Body)
+			_, _ = w.Write(bodyBytes)
+			return
+		}
+
+		if clientWantsStream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			flusher, canFlush := w.(http.Flusher)
+			reader := bufio.NewReader(upResp.Body)
+			for {
+				line, err := reader.ReadBytes('\n')
+				if len(line) > 0 {
+					captureStreamUsage(line, tokens)
+					_, _ = w.Write(line)
+					if canFlush {
+						flusher.Flush()
+					}
+				}
+				if err != nil {
+					break
+				}
+			}
+			return
+		}
+
+		bodyBytes, _ := io.ReadAll(upResp.Body)
+		captureNonStreamUsage(bodyBytes, tokens)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(bodyBytes)
 		return
 	}
 

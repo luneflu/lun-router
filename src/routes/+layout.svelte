@@ -11,6 +11,7 @@
 	import { compactorState } from '$lib/state/compactor.svelte';
 	import { ponytailState } from '$lib/state/ponytail.svelte';
 	import { kilocodeState } from '$lib/state/kilocode.svelte';
+	import { customProvidersState } from '$lib/state/custom-providers.svelte';
 	import Sidebar from '$lib/components/sidebar/sidebar.svelte';
 	import Navbar from '$lib/components/navbar/navbar.svelte';
 	import * as Alert from '$lib/components/ui/alert';
@@ -24,22 +25,34 @@
 
 	let mobileMenuOpen = $state(false);
 
-	const activeView = $derived<'home' | 'usage' | 'opencode' | 'antigravity' | 'kilocode' | 'chatgpt' | 'zai' | 'token-saver'>(
+	const activeView = $derived<
+		| 'home'
+		| 'usage'
+		| 'opencode'
+		| 'antigravity'
+		| 'kilocode'
+		| 'chatgpt'
+		| 'zai'
+		| 'token-saver'
+		| 'custom-providers'
+	>(
 		page.url.pathname.startsWith('/chatgpt')
 			? 'chatgpt'
 			: page.url.pathname.startsWith('/zai')
 				? 'zai'
 				: page.url.pathname.startsWith('/antigravity')
-				? 'antigravity'
-				: page.url.pathname.startsWith('/kilocode')
-					? 'kilocode'
-					: page.url.pathname.startsWith('/opencode')
-					? 'opencode'
-					: page.url.pathname.startsWith('/token-saver')
-						? 'token-saver'
-						: page.url.pathname.startsWith('/usage')
-							? 'usage'
-							: 'home'
+					? 'antigravity'
+					: page.url.pathname.startsWith('/kilocode')
+						? 'kilocode'
+						: page.url.pathname.startsWith('/custom-providers')
+							? 'custom-providers'
+							: page.url.pathname.startsWith('/opencode')
+								? 'opencode'
+								: page.url.pathname.startsWith('/token-saver')
+									? 'token-saver'
+									: page.url.pathname.startsWith('/usage')
+										? 'usage'
+										: 'home'
 	);
 
 	function loadData() {
@@ -47,6 +60,7 @@
 		providerState.load();
 		antigravityState.load();
 		kilocodeState.load();
+		customProvidersState.load();
 		compactorState.load();
 		ponytailState.load();
 	}
@@ -85,6 +99,8 @@
 			kilocodeAccounts={kilocodeState.activeAccountsCount}
 			kilocodeEnabledModels={kilocodeState.enabledCount}
 			kilocodeTotalModels={kilocodeState.totalCount}
+			customProvidersCount={customProvidersState.activeCount}
+			customProvidersTotalModels={customProvidersState.totalModels}
 			mobileOpen={mobileMenuOpen}
 			onCloseMobile={() => (mobileMenuOpen = false)}
 		/>

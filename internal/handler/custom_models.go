@@ -111,7 +111,10 @@ func handleDeleteCustomModel(ms *store.ModelStore, provider string, w http.Respo
 	}
 
 	// 1. Check path value
-	id := r.PathValue("id")
+	id := r.PathValue("modelId")
+	if id == "" {
+		id = r.PathValue("id")
+	}
 	// 2. Fall back to query param
 	if id == "" {
 		id = r.URL.Query().Get("id")

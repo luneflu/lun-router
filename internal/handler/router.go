@@ -15,6 +15,7 @@ import (
 	"lun-router/internal/caveman"
 	"lun-router/internal/chatgpt"
 	"lun-router/internal/compactor"
+	"lun-router/internal/customprovider"
 	"lun-router/internal/kilocode"
 	"lun-router/internal/opencode"
 	"lun-router/internal/ponytail"
@@ -39,6 +40,11 @@ func NewRouterWithProviders(ks *store.KeyStore, ms *store.ModelStore, client *op
 
 // NewRouterWithAllProviders wires all providers including Kilo Code.
 func NewRouterWithAllProviders(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, cgClient *chatgpt.Client, zaiClient *zai.Client, kcClient *kilocode.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
+	return NewRouterWithCustomProviders(ks, ms, client, agClient, cgClient, zaiClient, kcClient, nil, nil, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, staticFS...)
+}
+
+// NewRouterWithCustomProviders wires all providers including custom OpenAI-compatible providers.
+func NewRouterWithCustomProviders(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, cgClient *chatgpt.Client, zaiClient *zai.Client, kcClient *kilocode.Client, cpStore *customprovider.Store, cpClient *customprovider.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
 
 	mux := http.NewServeMux()
 
@@ -52,6 +58,12 @@ func NewRouterWithAllProviders(ks *store.KeyStore, ms *store.ModelStore, client 
 	}
 	if kcClient != nil {
 		compH.SetKiloCode(kcClient)
+	}
+	if cpStore != nil {
+		if cpClient == nil {
+			cpClient = customprovider.NewClient()
+		}
+		compH.SetCustomProviders(cpStore, cpClient)
 	}
 	compactH := NewCompactorHandler(compactorSvc)
 	usageH := NewUsageHandler(usageSvc)
@@ -169,6 +181,25 @@ func NewRouterWithAllProviders(ks *store.KeyStore, ms *store.ModelStore, client 
 		mux.HandleFunc("DELETE /api/providers/kilocode/models/custom/{id...}", kcH.DeleteCustomModel)
 		mux.HandleFunc("DELETE /api/providers/kilocode/models/custom", kcH.DeleteCustomModel)
 		mux.HandleFunc("GET /api/providers/kilo/free-models", kcH.GetFreeModels)
+	}
+
+	// Custom OpenAI-compatible Provider Routes
+	if cpStore != nil {
+		if cpClient == nil {
+			cpClient = customprovider.NewClient()
+		}
+		cpH := NewCustomProviderHandler(cpStore, cpClient, ms)
+		mux.HandleFunc("GET /api/providers/custom", cpH.List)
+		mux.HandleFunc("POST /api/providers/custom", cpH.Create)
+		mux.HandleFunc("GET /api/providers/custom/{id}", cpH.Get)
+		mux.HandleFunc("PUT /api/providers/custom/{id}", cpH.Update)
+		mux.HandleFunc("DELETE /api/providers/custom/{id}", cpH.Delete)
+		mux.HandleFunc("POST /api/providers/custom/{id}/sync", cpH.SyncModels)
+		mux.HandleFunc("GET /api/providers/custom/{id}/models", cpH.ListModels)
+		mux.HandleFunc("PUT /api/providers/custom/{id}/models", cpH.UpdateModels)
+		mux.HandleFunc("POST /api/providers/custom/{id}/models/custom", cpH.AddCustomModel)
+		mux.HandleFunc("DELETE /api/providers/custom/{id}/models/custom/{modelId...}", cpH.DeleteCustomModel)
+		mux.HandleFunc("DELETE /api/providers/custom/{id}/models/custom", cpH.DeleteCustomModel)
 	}
 
 	// Unknown API paths must not fall through to the SPA handler, which answers

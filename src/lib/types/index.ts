@@ -287,3 +287,33 @@ export interface AuthStatus {
 	setup_required: boolean;
 	authenticated: boolean;
 }
+
+export interface CustomProvider {
+	id: string;
+	name: string;
+	prefix: string;
+	baseUrl: string;
+	hasApiKey: boolean;
+	apiKeyPreview?: string;
+	models: string[];
+	modelCount: number;
+	isEnabled: boolean;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface CreateCustomProviderPayload {
+	name: string;
+	prefix: string;
+	baseUrl: string;
+	apiKey?: string;
+	isEnabled?: boolean;
+}
+
+export interface UpdateCustomProviderPayload {
+	name?: string;
+	prefix?: string;
+	baseUrl?: string;
+	apiKey?: string;
+	isEnabled?: boolean;
+}
