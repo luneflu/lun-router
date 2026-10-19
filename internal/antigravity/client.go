@@ -145,7 +145,7 @@ func NewClient(store *AccountStore, dataDirs ...string) *Client {
 	}
 
 	c := &Client{
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+		httpClient: &http.Client{Timeout: 0},
 		store:      store,
 		quotaCache: make(map[string]*AccountUsage),
 		exhausted:  make(map[string]time.Time),
@@ -243,7 +243,10 @@ func (c *Client) FetchAvailableModels(ctx context.Context) ([]string, bool, erro
 	}
 	b, _ := json.Marshal(reqMap)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, FetchAvailableModelsURL, bytes.NewReader(b))
+	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodPost, FetchAvailableModelsURL, bytes.NewReader(b))
 	if err != nil {
 		return c.GetCatalogModels(), false, err
 	}
