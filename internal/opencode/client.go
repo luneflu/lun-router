@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -222,6 +223,7 @@ func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any, identi
 			bodyMap["reasoning_effort"] = thinkingEffort
 		}
 		delete(bodyMap, "max_output_tokens")
+		sanitizeAssistantReasoning(bodyMap)
 	}
 
 	// Apply required fingerprint tools (read and shell for v2)
@@ -422,6 +424,7 @@ func (c *Client) doRequest(ctx context.Context, targetURL string, payloadBytes [
 // AggregateSSEStream parses incoming SSE stream into a standard OpenAI ChatCompletion response
 func AggregateSSEStream(r io.Reader, fallbackModel string, tk *usage.Tokens) (map[string]any, error) {
 	var fullText strings.Builder
+	var fullReasoning strings.Builder
 	var lastID string
 	var lastModel = fallbackModel
 	var lastCreated = time.Now().Unix()
@@ -446,8 +449,9 @@ func AggregateSSEStream(r io.Reader, fallbackModel string, tk *usage.Tokens) (ma
 			Created int64  `json:"created"`
 			Choices []struct {
 				Delta struct {
-					Role    string `json:"role"`
-					Content string `json:"content"`
+					Role             string `json:"role"`
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
@@ -482,6 +486,9 @@ func AggregateSSEStream(r io.Reader, fallbackModel string, tk *usage.Tokens) (ma
 			}
 			if len(chunk.Choices) > 0 {
 				fullText.WriteString(chunk.Choices[0].Delta.Content)
+				if chunk.Choices[0].Delta.ReasoningContent != "" {
+					fullReasoning.WriteString(chunk.Choices[0].Delta.ReasoningContent)
+				}
 				if chunk.Choices[0].FinishReason != nil {
 					finishReason = *chunk.Choices[0].FinishReason
 				}
@@ -519,6 +526,14 @@ func AggregateSSEStream(r io.Reader, fallbackModel string, tk *usage.Tokens) (ma
 		usageField = lastUsage.toMap()
 	}
 
+	assistantMsg := map[string]any{
+		"role":    "assistant",
+		"content": fullText.String(),
+	}
+	if fullReasoning.Len() > 0 {
+		assistantMsg["reasoning_content"] = fullReasoning.String()
+	}
+
 	return map[string]any{
 		"id":      lastID,
 		"object":  "chat.completion",
@@ -526,11 +541,8 @@ func AggregateSSEStream(r io.Reader, fallbackModel string, tk *usage.Tokens) (ma
 		"model":   lastModel,
 		"choices": []map[string]any{
 			{
-				"index": 0,
-				"message": map[string]string{
-					"role":    "assistant",
-					"content": fullText.String(),
-				},
+				"index":         0,
+				"message":       assistantMsg,
 				"finish_reason": finishReason,
 			},
 		},
@@ -588,6 +600,95 @@ func (u *usageEnvelope) toMap() map[string]int {
 		"total_tokens":      in + out,
 		"cached_tokens":     cached,
 		"reasoning_tokens":  reasoning,
+	}
+}
+
+var thinkTagRe = regexp.MustCompile(`(?s)<think>(.*?)</think>`)
+
+// sanitizeAssistantReasoning ensures assistant messages satisfy upstream thinking mode
+// requirements (e.g. SiliconFlow/DeepSeek-R1 requiring non-null reasoning_content).
+func sanitizeAssistantReasoning(bodyMap map[string]any) {
+	raw, ok := bodyMap["messages"]
+	if !ok {
+		return
+	}
+
+	sanitizeMsg := func(m map[string]any) {
+		role, _ := m["role"].(string)
+		if role != "assistant" {
+			return
+		}
+
+		rc, hasRC := m["reasoning_content"]
+		rcStr, rcIsStr := rc.(string)
+		if hasRC && rcIsStr && rcStr != "" {
+			return
+		}
+
+		switch content := m["content"].(type) {
+		case string:
+			if matches := thinkTagRe.FindAllStringSubmatch(content, -1); len(matches) > 0 {
+				var thoughts []string
+				for _, match := range matches {
+					if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
+						thoughts = append(thoughts, strings.TrimSpace(match[1]))
+					}
+				}
+				if len(thoughts) > 0 {
+					m["reasoning_content"] = strings.Join(thoughts, "\n")
+					m["content"] = strings.TrimSpace(thinkTagRe.ReplaceAllString(content, ""))
+					return
+				}
+			}
+		case []any:
+			var thoughts []string
+			for _, part := range content {
+				if pMap, ok := part.(map[string]any); ok {
+					if t, _ := pMap["type"].(string); t == "text" {
+						if textStr, _ := pMap["text"].(string); textStr != "" {
+							if matches := thinkTagRe.FindAllStringSubmatch(textStr, -1); len(matches) > 0 {
+								for _, match := range matches {
+									if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
+										thoughts = append(thoughts, strings.TrimSpace(match[1]))
+									}
+								}
+								pMap["text"] = strings.TrimSpace(thinkTagRe.ReplaceAllString(textStr, ""))
+							}
+						}
+					}
+				}
+			}
+			if len(thoughts) > 0 {
+				m["reasoning_content"] = strings.Join(thoughts, "\n")
+				return
+			}
+		}
+
+		m["reasoning_content"] = ""
+	}
+
+	switch msgs := raw.(type) {
+	case []any:
+		for _, item := range msgs {
+			if m, ok := item.(map[string]any); ok {
+				sanitizeMsg(m)
+			}
+		}
+	case []map[string]any:
+		for _, m := range msgs {
+			sanitizeMsg(m)
+		}
+	case []map[string]string:
+		newMsgs := make([]map[string]any, len(msgs))
+		for i, m := range msgs {
+			newM := make(map[string]any, len(m)+1)
+			for k, v := range m {
+				newM[k] = v
+			}
+			sanitizeMsg(newM)
+			newMsgs[i] = newM
+		}
+		bodyMap["messages"] = newMsgs
 	}
 }
 
