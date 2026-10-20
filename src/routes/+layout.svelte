@@ -11,6 +11,7 @@
 	import { compactorState } from '$lib/state/compactor.svelte';
 	import { ponytailState } from '$lib/state/ponytail.svelte';
 	import { kilocodeState } from '$lib/state/kilocode.svelte';
+	import { commandCodeState } from '$lib/state/commandcode.svelte';
 	import { customProvidersState } from '$lib/state/custom-providers.svelte';
 	import Sidebar from '$lib/components/sidebar/sidebar.svelte';
 	import Navbar from '$lib/components/navbar/navbar.svelte';
@@ -31,6 +32,7 @@
 		| 'opencode'
 		| 'antigravity'
 		| 'kilocode'
+		| 'commandcode'
 		| 'chatgpt'
 		| 'zai'
 		| 'token-saver'
@@ -44,15 +46,17 @@
 					? 'antigravity'
 					: page.url.pathname.startsWith('/kilocode')
 						? 'kilocode'
-						: page.url.pathname.startsWith('/custom-providers')
-							? 'custom-providers'
-							: page.url.pathname.startsWith('/opencode')
-								? 'opencode'
-								: page.url.pathname.startsWith('/token-saver')
-									? 'token-saver'
-									: page.url.pathname.startsWith('/usage')
-										? 'usage'
-										: 'home'
+						: page.url.pathname.startsWith('/commandcode')
+							? 'commandcode'
+							: page.url.pathname.startsWith('/custom-providers')
+								? 'custom-providers'
+								: page.url.pathname.startsWith('/opencode')
+									? 'opencode'
+									: page.url.pathname.startsWith('/token-saver')
+										? 'token-saver'
+										: page.url.pathname.startsWith('/usage')
+											? 'usage'
+											: 'home'
 	);
 
 	function loadData() {
@@ -60,6 +64,7 @@
 		providerState.load();
 		antigravityState.load();
 		kilocodeState.load();
+		commandCodeState.load();
 		customProvidersState.load();
 		compactorState.load();
 		ponytailState.load();
@@ -99,6 +104,9 @@
 			kilocodeAccounts={kilocodeState.activeAccountsCount}
 			kilocodeEnabledModels={kilocodeState.enabledCount}
 			kilocodeTotalModels={kilocodeState.totalCount}
+			commandCodeAccounts={commandCodeState.activeAccountsCount}
+			commandCodeEnabledModels={commandCodeState.enabledCount}
+			commandCodeTotalModels={commandCodeState.totalCount}
 			customProvidersCount={customProvidersState.activeCount}
 			customProvidersTotalModels={customProvidersState.totalModels}
 			mobileOpen={mobileMenuOpen}

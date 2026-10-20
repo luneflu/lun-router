@@ -14,6 +14,7 @@ import (
 	"lun-router/internal/auth"
 	"lun-router/internal/caveman"
 	"lun-router/internal/chatgpt"
+	"lun-router/internal/commandcode"
 	"lun-router/internal/compactor"
 	"lun-router/internal/customprovider"
 	"lun-router/internal/kilocode"
@@ -45,6 +46,15 @@ func NewRouterWithAllProviders(ks *store.KeyStore, ms *store.ModelStore, client 
 
 // NewRouterWithCustomProviders wires all providers including custom OpenAI-compatible providers.
 func NewRouterWithCustomProviders(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, cgClient *chatgpt.Client, zaiClient *zai.Client, kcClient *kilocode.Client, cpStore *customprovider.Store, cpClient *customprovider.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
+	return newRouter(ks, ms, client, agClient, cgClient, zaiClient, kcClient, cpStore, cpClient, nil, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, staticFS...)
+}
+
+// NewRouterWithCommandCode wires every provider including Command Code.
+func NewRouterWithCommandCode(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, cgClient *chatgpt.Client, zaiClient *zai.Client, kcClient *kilocode.Client, cpStore *customprovider.Store, cpClient *customprovider.Client, ccClient *commandcode.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
+	return newRouter(ks, ms, client, agClient, cgClient, zaiClient, kcClient, cpStore, cpClient, ccClient, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, staticFS...)
+}
+
+func newRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client, agClient *antigravity.Client, cgClient *chatgpt.Client, zaiClient *zai.Client, kcClient *kilocode.Client, cpStore *customprovider.Store, cpClient *customprovider.Client, ccClient *commandcode.Client, compactorSvc *compactor.Service, cavemanSvc *caveman.Service, ponytailSvc *ponytail.Service, authSvc *auth.Service, usageSvc *usage.Service, staticFS ...fs.FS) http.Handler {
 
 	mux := http.NewServeMux()
 
@@ -58,6 +68,9 @@ func NewRouterWithCustomProviders(ks *store.KeyStore, ms *store.ModelStore, clie
 	}
 	if kcClient != nil {
 		compH.SetKiloCode(kcClient)
+	}
+	if ccClient != nil {
+		compH.SetCommandCode(ccClient)
 	}
 	if cpStore != nil {
 		if cpClient == nil {
@@ -181,6 +194,22 @@ func NewRouterWithCustomProviders(ks *store.KeyStore, ms *store.ModelStore, clie
 		mux.HandleFunc("DELETE /api/providers/kilocode/models/custom/{id...}", kcH.DeleteCustomModel)
 		mux.HandleFunc("DELETE /api/providers/kilocode/models/custom", kcH.DeleteCustomModel)
 		mux.HandleFunc("GET /api/providers/kilo/free-models", kcH.GetFreeModels)
+	}
+
+	// Command Code Provider Routes
+	if ccClient != nil {
+		ccH := NewCommandCodeHandler(ccClient, ms)
+		mux.HandleFunc("GET /api/providers/commandcode/accounts", ccH.ListAccounts)
+		mux.HandleFunc("POST /api/providers/commandcode/accounts", ccH.CreateAccount)
+		mux.HandleFunc("PUT /api/providers/commandcode/accounts/{id}", ccH.UpdateAccount)
+		mux.HandleFunc("DELETE /api/providers/commandcode/accounts/{id}", ccH.DeleteAccount)
+		mux.HandleFunc("POST /api/providers/commandcode/accounts/{id}/test", ccH.TestAccount)
+		mux.HandleFunc("GET /api/providers/commandcode/models", ccH.ListModels)
+		mux.HandleFunc("PUT /api/providers/commandcode/models", ccH.UpdateModels)
+		mux.HandleFunc("POST /api/providers/commandcode/models/refresh", ccH.RefreshModels)
+		mux.HandleFunc("POST /api/providers/commandcode/models/custom", ccH.AddCustomModel)
+		mux.HandleFunc("DELETE /api/providers/commandcode/models/custom/{id...}", ccH.DeleteCustomModel)
+		mux.HandleFunc("DELETE /api/providers/commandcode/models/custom", ccH.DeleteCustomModel)
 	}
 
 	// Custom OpenAI-compatible Provider Routes

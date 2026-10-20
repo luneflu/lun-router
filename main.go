@@ -13,6 +13,7 @@ import (
 	"lun-router/internal/auth"
 	"lun-router/internal/caveman"
 	"lun-router/internal/chatgpt"
+	"lun-router/internal/commandcode"
 	"lun-router/internal/compactor"
 	"lun-router/internal/customprovider"
 	"lun-router/internal/handler"
@@ -140,7 +141,14 @@ func main() {
 	}
 	cpClient := customprovider.NewClient()
 
-	router := handler.NewRouterWithCustomProviders(ks, ms, client, agClient, cgClient, zaiClient, kcClient, cpStore, cpClient, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, distFS)
+	ccStore, err := commandcode.NewAccountStore(dataDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize Command Code AccountStore: %v", err)
+	}
+	ccClient := commandcode.NewClient(ccStore, dataDir)
+	ccClient.StartBackgroundSync(context.Background())
+
+	router := handler.NewRouterWithCommandCode(ks, ms, client, agClient, cgClient, zaiClient, kcClient, cpStore, cpClient, ccClient, compactorSvc, cavemanSvc, ponytailSvc, authSvc, usageSvc, distFS)
 
 	log.Printf("Lun Router Go backend running on :%s (opencode version: %s, data dir: %s)", port, vm.GetVersion(), dataDir)
 	if err := http.ListenAndServe(":"+port, router); err != nil {

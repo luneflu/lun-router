@@ -16,6 +16,7 @@
 			| 'opencode'
 			| 'antigravity'
 			| 'kilocode'
+			| 'commandcode'
 			| 'chatgpt'
 			| 'zai'
 			| 'token-saver'
@@ -68,6 +69,10 @@
 					<span class="text-muted-foreground">Providers</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
 					<span class="font-semibold text-foreground">Kilo Code</span>
+				{:else if activeView === 'commandcode'}
+					<span class="text-muted-foreground">Providers</span>
+					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
+					<span class="font-semibold text-foreground">Command Code</span>
 				{:else if activeView === 'custom-providers'}
 					<span class="text-muted-foreground">Providers</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />

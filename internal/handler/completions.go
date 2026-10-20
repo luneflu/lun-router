@@ -15,6 +15,7 @@ import (
 	"lun-router/internal/antigravity"
 	"lun-router/internal/caveman"
 	"lun-router/internal/chatgpt"
+	"lun-router/internal/commandcode"
 	"lun-router/internal/compactor"
 	"lun-router/internal/customprovider"
 	"lun-router/internal/kilocode"
@@ -34,6 +35,7 @@ type CompletionHandler struct {
 	cgClient         *chatgpt.Client
 	zaiClient        *zai.Client
 	kcClient         *kilocode.Client
+	ccClient         *commandcode.Client
 	customStore      *customprovider.Store
 	customClient     *customprovider.Client
 	compactorService *compactor.Service
@@ -60,6 +62,11 @@ func (h *CompletionHandler) SetZai(c *zai.Client) {
 // SetKiloCode attaches the Kilo Code provider client.
 func (h *CompletionHandler) SetKiloCode(c *kilocode.Client) {
 	h.kcClient = c
+}
+
+// SetCommandCode attaches the Command Code provider client.
+func (h *CompletionHandler) SetCommandCode(c *commandcode.Client) {
+	h.ccClient = c
 }
 
 // SetCustomProviders attaches the custom provider store and client.
@@ -93,6 +100,7 @@ const (
 	chatgptPrefix     = "chatgpt/"
 	zaiPrefix         = "zai/"
 	kilocodePrefix    = "kilocode/"
+	commandcodePrefix = "commandcode/"
 )
 
 // GET /v1/models (OpenAI-compatible catalog: returns only enabled models)
@@ -171,6 +179,25 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Command Code models
+	if h.ccClient != nil {
+		for _, m := range h.ccClient.GetCatalogModels() {
+			if h.modelStore == nil || !h.modelStore.IsDisabled("commandcode", m.ID) {
+				item := ModelItem{
+					ID:      commandcodePrefix + m.ID,
+					Object:  "model",
+					OwnedBy: "commandcode",
+					Enabled: true,
+				}
+				model.EnrichModelItem(&item, "commandcode")
+				if m.ContextLength > 0 {
+					item.ContextLength = m.ContextLength
+				}
+				filtered = append(filtered, item)
+			}
+		}
+	}
+
 	// Custom models across providers
 	if h.modelStore != nil {
 		for _, cm := range h.modelStore.ListCustomModels("opencode") {
@@ -229,6 +256,27 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 					}
 					if item.Capabilities == nil {
 						model.EnrichModelItem(&item, "kilocode")
+					}
+					filtered = append(filtered, item)
+				}
+			}
+		}
+		if h.ccClient != nil {
+			for _, cm := range h.modelStore.ListCustomModels("commandcode") {
+				if !h.modelStore.IsDisabled("commandcode", cm.ID) {
+					item := ModelItem{
+						ID:                  commandcodePrefix + cm.ID,
+						Object:              "model",
+						OwnedBy:             "commandcode",
+						Enabled:             true,
+						IsCustom:            true,
+						Capabilities:        cm.Capabilities,
+						ThinkingLevels:      cm.ThinkingLevels,
+						ContextLength:       cm.ContextLength,
+						MaxCompletionTokens: cm.MaxCompletionTokens,
+					}
+					if item.Capabilities == nil {
+						model.EnrichModelItem(&item, "commandcode")
 					}
 					filtered = append(filtered, item)
 				}
@@ -1061,6 +1109,56 @@ func (h *CompletionHandler) pingSingleModel(ctx context.Context, model string, p
 		}
 	}
 
+	// Command Code Model Test
+	if provider == "commandcode" || (provider == "" && h.isCommandCodeModel(model)) {
+		cleanModel := commandcode.CleanModelID(bareModel)
+		if h.modelStore != nil && h.modelStore.IsDisabled("commandcode", cleanModel) {
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     fmt.Sprintf("Model '%s' is disabled for provider commandcode", model),
+				LatencyMs: 0,
+			}
+		}
+
+		if h.ccClient == nil {
+			return ModelTestResult{OK: false, Model: model, Error: "Command Code provider not initialized"}
+		}
+
+		mCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+
+		start := time.Now()
+		testBody := map[string]any{
+			"model":      cleanModel,
+			"messages":   []map[string]string{{"role": "user", "content": prompt}},
+			"max_tokens": 32,
+		}
+
+		upResp, _, err := h.ccClient.ExecuteChat(mCtx, testBody, true)
+		latencyMs := time.Since(start).Milliseconds()
+		if err != nil {
+			return ModelTestResult{OK: false, Model: model, Error: err.Error(), LatencyMs: latencyMs}
+		}
+		defer upResp.Body.Close()
+
+		if upResp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(io.LimitReader(upResp.Body, 1<<20))
+			return ModelTestResult{
+				OK:        false,
+				Model:     model,
+				Error:     commandcode.ErrorMessage(bodyBytes),
+				LatencyMs: latencyMs,
+				Status:    upResp.StatusCode,
+			}
+		}
+
+		if _, err := commandcode.Relay(nil, nil, upResp.Body, cleanModel); err != nil {
+			return ModelTestResult{OK: false, Model: model, Error: err.Error(), LatencyMs: latencyMs}
+		}
+		return ModelTestResult{OK: true, Model: model, LatencyMs: latencyMs}
+	}
+
 	// Kilo Code Model Test
 	if provider == "kilocode" || (provider == "" && h.isKilocodeModel(model)) {
 		cleanModel := kilocode.CleanModelID(bareModel)
@@ -1525,6 +1623,21 @@ func (h *CompletionHandler) isKilocodeModel(model string) bool {
 	return h.kcClient.IsCatalogModel(clean)
 }
 
+// isCommandCodeModel resolves whether a model belongs to the Command Code provider.
+func (h *CompletionHandler) isCommandCodeModel(model string) bool {
+	if provider, _, ok := splitProviderPrefix(model); ok {
+		return provider == "commandcode"
+	}
+	clean := commandcode.CleanModelID(model)
+	if h.modelStore != nil && h.modelStore.HasCustomModel("commandcode", clean) {
+		return true
+	}
+	if h.ccClient == nil {
+		return false
+	}
+	return h.ccClient.IsCatalogModel(clean)
+}
+
 // splitProviderPrefix resolves an explicit provider namespace. ok is false for a
 // bare ID, which keeps catalog-based routing.
 func splitProviderPrefix(model string) (provider, id string, ok bool) {
@@ -1551,6 +1664,8 @@ func splitProviderPrefixWithStore(model string, cpStore *customprovider.Store) (
 		return "zai", strings.TrimPrefix(model, zaiPrefix), true
 	case kilocode.HasKilocodePrefix(model):
 		return "kilocode", kilocode.CleanModelID(model), true
+	case commandcode.HasCommandCodePrefix(model):
+		return "commandcode", commandcode.CleanModelID(model), true
 	default:
 		if cpStore != nil {
 			if slashIdx := strings.Index(model, "/"); slashIdx > 0 {
@@ -1918,6 +2033,94 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 		bodyBytes, _ := io.ReadAll(upResp.Body)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(bodyBytes)
+		return
+	}
+
+	// Check if this is a Command Code model
+	if modelProvider == "commandcode" || (modelProvider == "" && h.isCommandCodeModel(model)) {
+		cleanModel := commandcode.CleanModelID(model)
+		if h.modelStore != nil && h.modelStore.IsDisabled("commandcode", cleanModel) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Model '%s' is disabled for provider commandcode", model),
+					"type":    "invalid_request_error",
+				},
+			})
+			return
+		}
+
+		if h.ccClient == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(commandcode.ErrorPayload("Command Code provider not initialized"))
+			return
+		}
+
+		ev.Provider = "commandcode"
+		upResp, acc, err := h.ccClient.ExecuteChat(r.Context(), bodyMap, true)
+		if err != nil {
+			ev.Err = "upstream_error"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(commandcode.ErrorPayload(fmt.Sprintf("Upstream Command Code error: %v", err)))
+			return
+		}
+		if acc != nil {
+			ev.Account = acc.Name
+		}
+		ev.UpMs = time.Since(reqStart).Milliseconds()
+		defer upResp.Body.Close()
+
+		if upResp.StatusCode != http.StatusOK {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(upResp.StatusCode)
+			bodyBytes, _ := io.ReadAll(io.LimitReader(upResp.Body, 1<<20))
+			_ = json.NewEncoder(w).Encode(commandcode.ErrorPayload(commandcode.ErrorMessage(bodyBytes)))
+			return
+		}
+
+		if clientWantsStream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			flusher, canFlush := w.(http.Flusher)
+			flush := func() {
+				if canFlush {
+					flusher.Flush()
+				}
+			}
+
+			reply, relayErr := commandcode.Relay(w, flush, upResp.Body, cleanModel)
+			if relayErr != nil {
+				ev.Err = "upstream_error"
+				if data, mErr := json.Marshal(commandcode.ErrorPayload(relayErr.Error())); mErr == nil {
+					fmt.Fprintf(w, "data: %s\n\n", data)
+					flush()
+				}
+			}
+			if reply != nil && reply.Usage != nil {
+				tokens.Set(reply.Usage.In, reply.Usage.Out, reply.Usage.Cached, reply.Reasoning.Len())
+			}
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			flush()
+			return
+		}
+
+		reply, relayErr := commandcode.Relay(nil, nil, upResp.Body, cleanModel)
+		if relayErr != nil {
+			ev.Err = "upstream_error"
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(commandcode.ErrorPayload(relayErr.Error()))
+			return
+		}
+		if reply.Usage != nil {
+			tokens.Set(reply.Usage.In, reply.Usage.Out, reply.Usage.Cached, reply.Reasoning.Len())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(reply.ChatCompletion(cleanModel))
 		return
 	}
 

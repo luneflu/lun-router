@@ -68,6 +68,14 @@ export interface KilocodeAccount {
 	createdAt: string;
 }
 
+export interface CommandCodeAccount {
+	id: string;
+	name?: string;
+	apiKey?: string;
+	isActive: boolean;
+	createdAt: string;
+}
+
 export interface AntigravityQuotaItem {
 	name: string;
 	modelKey?: string;
