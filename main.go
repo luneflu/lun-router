@@ -58,6 +58,9 @@ func main() {
 	// Keep account balances warm so request routing can pick the account with
 	// the most remaining credit instead of rotating blindly.
 	agClient.StartQuotaSync(context.Background())
+	// Ping parked accounts right after their quota resetAt so the new window opens
+	// without a manual trigger (toggle on the Antigravity provider page).
+	agClient.StartAutoReset(context.Background())
 
 	compactorSvc, err := compactor.NewService(dataDir)
 	if err != nil {

@@ -171,6 +171,8 @@ func newRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 		mux.HandleFunc("DELETE /api/providers/antigravity/models/custom", agH.DeleteCustomModel)
 		mux.HandleFunc("GET /api/providers/antigravity/accounts/{id}/quota", agH.GetAccountQuota)
 		mux.HandleFunc("GET /api/providers/antigravity/quota", agH.GetAllQuotas)
+		mux.HandleFunc("GET /api/providers/antigravity/auto-reset", agH.GetAutoReset)
+		mux.HandleFunc("PUT /api/providers/antigravity/auto-reset", agH.UpdateAutoReset)
 	}
 
 	// Kilo Code Provider Routes (9router parity)

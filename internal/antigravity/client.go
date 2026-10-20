@@ -100,6 +100,12 @@ type Client struct {
 	// refresh runs at a time.
 	quotaRefreshMu  sync.Mutex
 	quotaRefreshing bool
+
+	// autoReset pings an account right after its quota resetAt so the new window
+	// starts without waiting for a real request.
+	settingsFile string
+	autoResetMu  sync.RWMutex
+	autoReset    bool
 }
 
 // quotaSyncInterval is how often account balances are refreshed in the
@@ -151,9 +157,13 @@ func NewClient(store *AccountStore, dataDirs ...string) *Client {
 		exhausted:  make(map[string]time.Time),
 		models:     append([]string{}, CatalogModels...),
 		modelsFile: filepath.Join(dataDir, "antigravity_models.json"),
+
+		settingsFile: filepath.Join(dataDir, "antigravity_settings.json"),
+		autoReset:    true,
 	}
 
 	c.loadModelsCache()
+	c.loadSettings()
 	return c
 }
 
@@ -670,6 +680,150 @@ func (c *Client) requestQuotaRefresh() {
 	}()
 }
 
+// autoResetInterval is how often expired quota parks are checked. Reset times are
+// minute-granular on Google's side, so a minute is the useful resolution.
+const autoResetInterval = time.Minute
+
+// AutoResetEnabled reports whether expired quota parks are pinged automatically.
+func (c *Client) AutoResetEnabled() bool {
+	c.autoResetMu.RLock()
+	defer c.autoResetMu.RUnlock()
+	return c.autoReset
+}
+
+// SetAutoResetEnabled persists the auto reset toggle.
+func (c *Client) SetAutoResetEnabled(enabled bool) error {
+	c.autoResetMu.Lock()
+	c.autoReset = enabled
+	err := c.saveSettingsLocked()
+	c.autoResetMu.Unlock()
+	return err
+}
+
+func (c *Client) loadSettings() {
+	if c.settingsFile == "" {
+		return
+	}
+	b, err := os.ReadFile(c.settingsFile)
+	if err != nil {
+		return
+	}
+	var cfg struct {
+		AutoResetEnabled *bool `json:"autoResetEnabled"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil || cfg.AutoResetEnabled == nil {
+		return
+	}
+	c.autoReset = *cfg.AutoResetEnabled
+}
+
+func (c *Client) saveSettingsLocked() error {
+	if c.settingsFile == "" {
+		return nil
+	}
+	b, err := json.MarshalIndent(struct {
+		AutoResetEnabled bool `json:"autoResetEnabled"`
+	}{AutoResetEnabled: c.autoReset}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(c.settingsFile), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(c.settingsFile, b, 0644)
+}
+
+// StartAutoReset pings parked accounts once their quota resetAt has passed, then
+// refreshes their balances, so the new window opens without a manual trigger.
+func (c *Client) StartAutoReset(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(autoResetInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.runAutoReset(ctx)
+			}
+		}
+	}()
+}
+
+func (c *Client) runAutoReset(ctx context.Context) {
+	if !c.AutoResetEnabled() {
+		return
+	}
+
+	for _, target := range c.takeExpiredResets(time.Now()) {
+		acc, ok := c.store.Get(target.accountID)
+		if !ok || !acc.IsActive {
+			continue
+		}
+		model := target.model
+
+		callCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		body := map[string]any{
+			"model": model,
+			"messages": []map[string]any{
+				{"role": "user", "content": "ping"},
+			},
+		}
+		resp, err := c.executeChatWithAccount(callCtx, acc, body, false)
+		if err != nil {
+			log.Printf("[Antigravity] auto reset ping for %s (%s) failed: %v", acc.Email, model, err)
+			cancel()
+			continue
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		if _, err := c.GetAccountUsage(callCtx, acc, true); err != nil {
+			log.Printf("[Antigravity] auto reset quota refresh for %s failed: %v", acc.Email, err)
+		}
+		cancel()
+		log.Printf("[Antigravity] auto reset pinged %s (%s) after quota reset", acc.Email, model)
+	}
+}
+
+// resetTarget is one account/model pair to ping after its quota reset.
+type resetTarget struct {
+	accountID string
+	model     string
+}
+
+// takeExpiredResets drops exhausted entries whose resetAt has passed and returns
+// one model per account *per quota family*, because Gemini and Claude windows
+// reset independently. Family session keys are dropped without their own ping:
+// the model key of the same family covers that window.
+func (c *Client) takeExpiredResets(now time.Time) []resetTarget {
+	c.quotaMu.Lock()
+	defer c.quotaMu.Unlock()
+
+	seen := make(map[string]bool)
+	var targets []resetTarget
+	for key, until := range c.exhausted {
+		if now.Before(until) {
+			continue
+		}
+		delete(c.exhausted, key)
+
+		accountID, model, ok := strings.Cut(key, "|")
+		if !ok || strings.HasSuffix(model, "_session") {
+			continue
+		}
+		bucket := GetModelFamily(CleanModelID(model))
+		if bucket == "" {
+			bucket = model
+		}
+		if dedupe := accountID + "|" + bucket; !seen[dedupe] {
+			seen[dedupe] = true
+			targets = append(targets, resetTarget{accountID: accountID, model: model})
+		}
+	}
+	return targets
+}
+
 func (c *Client) BuildAuthURL(redirectURI, state string) string {
 	redirectURI = c.AuthRedirectURI(redirectURI)
 	if state == "" {
@@ -883,6 +1037,15 @@ func (c *Client) ExecuteChat(ctx context.Context, body map[string]any, stream bo
 	if !ok {
 		return nil, fmt.Errorf("no active Antigravity account found; please add or activate an account in Providers > Antigravity")
 	}
+
+	return c.executeChatWithAccount(ctx, acc, body, stream)
+}
+
+// executeChatWithAccount sends one completion to a specific account. Auto reset
+// uses it to ping the parked account instead of whichever account ranks first.
+func (c *Client) executeChatWithAccount(ctx context.Context, acc *Account, body map[string]any, stream bool) (*http.Response, error) {
+	model, _ := body["model"].(string)
+	cleanModel := CleanModelID(model)
 
 	if err := c.EnsureFreshToken(ctx, acc); err != nil {
 		return nil, fmt.Errorf("token refresh for account %s: %w", acc.Email, err)

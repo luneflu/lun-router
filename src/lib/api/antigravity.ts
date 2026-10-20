@@ -231,3 +231,28 @@ export async function fetchAntigravityQuota(
 	}
 	return data.usages || {};
 }
+
+export async function fetchAntigravityAutoReset(): Promise<{ enabled: boolean }> {
+	try {
+		const res = await fetch('/api/providers/antigravity/auto-reset');
+		if (res.ok) return res.json();
+	} catch {
+		// backend offline
+	}
+	return { enabled: false };
+}
+
+export async function setAntigravityAutoReset(
+	enabled: boolean
+): Promise<{ ok: boolean; enabled: boolean }> {
+	const res = await fetch('/api/providers/antigravity/auto-reset', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ enabled })
+	});
+	if (!res.ok) {
+		const err = await res.json().catch(() => ({}));
+		throw new Error(err.error || `Failed to update auto reset: ${res.statusText}`);
+	}
+	return res.json();
+}

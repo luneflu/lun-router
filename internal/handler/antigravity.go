@@ -351,6 +351,35 @@ func (h *AntigravityHandler) UpdateModels(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// GET /api/providers/antigravity/auto-reset
+func (h *AntigravityHandler) GetAutoReset(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"enabled": h.client.AutoResetEnabled()})
+}
+
+// PUT /api/providers/antigravity/auto-reset
+func (h *AntigravityHandler) UpdateAutoReset(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Enabled == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "enabled field is required"})
+		return
+	}
+
+	if err := h.client.SetAutoResetEnabled(*payload.Enabled); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "enabled": *payload.Enabled})
+}
+
 // GET /api/providers/antigravity/accounts/{id}/quota
 func (h *AntigravityHandler) GetAccountQuota(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

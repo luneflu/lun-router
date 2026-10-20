@@ -2,6 +2,7 @@
 	import * as Card from '$lib/components/ui/card';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
+	import { Switch } from '$lib/components/ui/switch';
 	import { cn } from '$lib/utils';
 	import { AntigravityState } from '$lib/state/antigravity.svelte';
 	import { toast } from '$lib/state/toast.svelte';
@@ -21,6 +22,18 @@
 
 	let selectedChatModel = $state('gemini-3.8-flash');
 	let syncingModels = $state(false);
+
+	async function handleAutoReset(enabled: boolean) {
+		try {
+			await antigravityState.setAutoReset(enabled);
+			toast.info(
+				'Auto Reset Updated',
+				enabled ? 'Parked accounts will be pinged after reset' : 'Auto reset disabled'
+			);
+		} catch (e: unknown) {
+			toast.error('Update Failed', e instanceof Error ? e.message : 'Failed to update auto reset');
+		}
+	}
 
 	async function handleSyncModels() {
 		try {
@@ -72,6 +85,16 @@
 				</div>
 
 				<div class="flex items-center gap-2 self-start sm:self-auto">
+					<label
+						class="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5"
+						title="Ping parked accounts right after their quota resetAt, so the new window opens without a manual trigger"
+					>
+						<Switch
+							checked={antigravityState.autoReset}
+							onCheckedChange={(checked) => handleAutoReset(checked)}
+						/>
+						<span class="text-xs font-medium text-muted-foreground">Auto reset</span>
+					</label>
 					<Button
 						variant="outline"
 						size="sm"

@@ -10,6 +10,8 @@ import {
 	setAntigravityModelEnabled,
 	setAntigravityBatchModelsEnabled,
 	fetchAntigravityQuota,
+	fetchAntigravityAutoReset,
+	setAntigravityAutoReset,
 	type CreateAccountPayload
 } from '$lib/api/antigravity';
 import {
@@ -27,6 +29,7 @@ export class AntigravityState {
 	loading = $state(false);
 	accountsLoading = $state(false);
 	quotaLoading = $state(false);
+	autoReset = $state(false);
 	error = $state<string | null>(null);
 	searchQuery = $state('');
 	filter = $state<'all' | 'enabled' | 'disabled'>('all');
@@ -51,7 +54,12 @@ export class AntigravityState {
 		try {
 			this.loading = true;
 			this.error = null;
-			await Promise.all([this.loadModels(), this.loadAccounts(), this.loadQuota()]);
+			await Promise.all([
+				this.loadModels(),
+				this.loadAccounts(),
+				this.loadQuota(),
+				this.loadAutoReset()
+			]);
 		} catch (e: unknown) {
 			this.error = e instanceof Error ? e.message : 'Failed to load Antigravity provider';
 		} finally {
@@ -69,6 +77,21 @@ export class AntigravityState {
 			console.warn('Failed to load quota:', e);
 		} finally {
 			this.quotaLoading = false;
+		}
+	}
+
+	async loadAutoReset() {
+		this.autoReset = (await fetchAntigravityAutoReset()).enabled;
+	}
+
+	async setAutoReset(enabled: boolean) {
+		const prev = this.autoReset;
+		this.autoReset = enabled;
+		try {
+			await setAntigravityAutoReset(enabled);
+		} catch (e: unknown) {
+			this.autoReset = prev;
+			throw e;
 		}
 	}
 
