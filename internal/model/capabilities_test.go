@@ -116,3 +116,16 @@ func TestEnrichModelItem(t *testing.T) {
 		t.Errorf("expected max_completion_tokens 131072, got %d", item.MaxCompletionTokens)
 	}
 }
+
+func TestResolveCapabilitiesCustomProvider(t *testing.T) {
+	// Custom provider models must not inherit guessed labels.
+	caps := ResolveCapabilities("myproxy", "gpt-5")
+	if caps.Tools || caps.Reasoning || len(caps.ThinkingLevels) > 0 {
+		t.Fatalf("expected zero capabilities for custom provider, got %+v", caps)
+	}
+	// Builtins keep pattern matching.
+	caps = ResolveCapabilities("opencode", "gpt-5")
+	if !caps.Reasoning || !caps.Tools {
+		t.Fatalf("expected builtin pattern capabilities, got %+v", caps)
+	}
+}

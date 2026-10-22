@@ -587,8 +587,23 @@ func zaiCapabilities(modelID string) (ModelCapabilities, bool) {
 	return caps, ok
 }
 
+// knownProviders are the built-in providers whose models may use patternRules
+// and defaults. Custom providers have no upstream capability data, so their
+// models must not inherit guessed labels.
+var knownProviders = map[string]bool{
+	"zai":         true,
+	"opencode":    true,
+	"antigravity": true,
+	"chatgpt":     true,
+	"kilocode":    true,
+	"commandcode": true,
+}
+
 // ResolveCapabilities determines model capabilities based on provider and model ID.
 func ResolveCapabilities(provider, modelID string) ModelCapabilities {
+	if !knownProviders[strings.ToLower(provider)] {
+		return ModelCapabilities{}
+	}
 	baseID := strings.TrimSpace(modelID)
 	// Advertised IDs are namespaced ("opencode/gpt-5.2"); patterns match the bare ID.
 	baseID = strings.TrimPrefix(baseID, provider+"/")
