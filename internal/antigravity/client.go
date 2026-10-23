@@ -1167,11 +1167,11 @@ func (c *Client) executeChatWithAccount(ctx context.Context, acc *Account, body 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", UserAgent)
 
-	resp, err := c.httpClient.Do(req)
-	if err == nil && resp != nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusConflict) {
-		c.MarkExhausted(acc.ID, cleanModel, time.Now().Add(15*time.Minute))
-	}
-	return resp, err
+	// Upstream errors are returned as-is. A 429 is a transient throttle, not spent
+	// quota, so parking the account here banned whole model families and made
+	// every account look exhausted at once. Real exhaustion is read from the
+	// quota cache by isExhaustedLocked: remainingPercentage 0 with a future resetAt.
+	return c.httpClient.Do(req)
 }
 
 func convertOpenAIMessagesToGemini(messages any, model string) ([]map[string]any, map[string]any) {
