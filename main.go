@@ -60,7 +60,7 @@ func main() {
 	agClient.StartQuotaSync(context.Background())
 	// Ping parked accounts right after their quota resetAt so the new window opens
 	// without a manual trigger (toggle on the Antigravity provider page).
-	agClient.StartAutoReset(context.Background())
+	// agClient.StartAutoReset(context.Background())
 
 	compactorSvc, err := compactor.NewService(dataDir)
 	if err != nil {

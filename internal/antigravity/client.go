@@ -410,20 +410,27 @@ func (c *Client) isExhaustedLocked(accountID, model string) bool {
 	}
 
 	if usage, ok := c.quotaCache[accountID]; ok && usage != nil {
-		if q, ok := usage.Quotas[cleanModel]; ok && q.RemainingPercentage <= 0 {
-			if t, err := time.Parse(time.RFC3339, q.ResetAt); err == nil && now.Before(t) {
-				return true
-			}
+		if strikesExhausted(usage.Quotas, cleanModel, now) {
+			return true
 		}
-		if fam != "" {
-			if q, ok := usage.Quotas[fam+"_session"]; ok && q.RemainingPercentage <= 0 {
-				if t, err := time.Parse(time.RFC3339, q.ResetAt); err == nil && now.Before(t) {
-					return true
-				}
-			}
+		// The 5h window is disabled while the weekly limit is spent, so both
+		// buckets gate: a fresh session does not make a drained week usable.
+		if fam != "" && (strikesExhausted(usage.Quotas, fam+"_session", now) || strikesExhausted(usage.Quotas, fam+"_weekly", now)) {
+			return true
 		}
 	}
 	return false
+}
+
+// strikesExhausted reports whether a bucket has no credit left and a reset still
+// ahead of now.
+func strikesExhausted(quotas map[string]QuotaItem, key string, now time.Time) bool {
+	q, ok := quotas[key]
+	if !ok || q.RemainingPercentage > 0 {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, q.ResetAt)
+	return err == nil && now.Before(t)
 }
 
 func (c *Client) IsExhausted(accountID, model string) bool {
@@ -1705,10 +1712,12 @@ func (c *Client) fetchQuotaSummary(ctx context.Context, accessToken, projectID s
 			}
 
 			var fraction float64
-			if disabled {
-				fraction = 0
-			} else if rf, ok := bMap["remainingFraction"].(float64); ok {
+			if rf, ok := bMap["remainingFraction"].(float64); ok {
 				fraction = rf
+			} else {
+				// No balance reported: unknown, not zero. A missing field used to
+				// render as 0% and park the whole family as exhausted.
+				continue
 			}
 
 			resetTime, _ := bMap["resetTime"].(string)
@@ -1798,8 +1807,8 @@ func (c *Client) fetchAvailableModelsQuota(ctx context.Context, accessToken, pro
 			DisplayName string `json:"displayName"`
 			IsInternal  bool   `json:"isInternal"`
 			QuotaInfo   *struct {
-				RemainingFraction float64 `json:"remainingFraction"`
-				ResetTime         string  `json:"resetTime"`
+				RemainingFraction *float64 `json:"remainingFraction"`
+				ResetTime         string   `json:"resetTime"`
 			} `json:"quotaInfo"`
 		} `json:"models"`
 	}
@@ -1840,7 +1849,12 @@ func (c *Client) fetchAvailableModelsQuota(ctx context.Context, accessToken, pro
 			continue
 		}
 
-		fraction := mData.QuotaInfo.RemainingFraction
+		// A missing balance is unknown, not zero. Treating it as 0% showed every
+		// model as exhausted.
+		if mData.QuotaInfo.RemainingFraction == nil {
+			continue
+		}
+		fraction := *mData.QuotaInfo.RemainingFraction
 		total := int64(1000)
 		remaining := int64(math.Round(float64(total) * fraction))
 		used := total - remaining
