@@ -8,6 +8,7 @@
 	import ModelTestChat from './model-test-chat.svelte';
 	import ModelListCard from './model-list-card.svelte';
 	import AccountsCard from './opencode/accounts-card.svelte';
+	import QuotaTrackerCard from './quota-tracker-card.svelte';
 
 	import BotIcon from '@lucide/svelte/icons/bot';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
@@ -124,8 +125,29 @@
 		</Card.Header>
 	</Card.Root>
 
-	<!-- OpenCode Zen Accounts -->
+	<!-- OpenCode Accounts -->
 	<AccountsCard {providerState} />
+
+	<!-- OpenCode Go Quota Tracker -->
+	<QuotaTrackerCard
+		accounts={providerState.accounts}
+		usages={providerState.usages}
+		loading={providerState.quotaLoading}
+		summaryKeys={['rolling', 'weekly', 'monthly']}
+		onRefreshAll={() => providerState.loadQuota(undefined, true)}
+		onRefreshAccount={(id) => providerState.loadQuota(id, true)}
+		title="Quota Tracker"
+		description="Rolling, weekly and monthly OpenCode Go limits tracked via the usage API"
+		emptyTitle="No OpenCode Account"
+		emptyText="Connect an OpenCode Console account above to view and track your OpenCode Go quota."
+		loadingText="Loading OpenCode Go quota..."
+		noMetricsText="No quota metrics recorded yet. Click Refresh Quotas to query OpenCode."
+		defaultPlan="OpenCode Go"
+		accent="orange"
+		subtitleFor={(account) => account.orgName || 'OpenCode Go'}
+		refreshAllSuccess="Quotas Refreshed"
+		refreshAccountSuccess="Quota Updated"
+	/>
 
 	<!-- Temporary Model Testing Chat -->
 	<ModelTestChat models={providerState.models} bind:selectedModelId={selectedChatModel} />

@@ -119,6 +119,20 @@ func maskToken(token string) string {
 	return "••••"
 }
 
+// ListRaw returns full accounts including tokens, for internal quota fetches.
+func (s *AccountStore) ListRaw() []*Account {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	res := make([]*Account, 0, len(s.accounts))
+	for _, acc := range s.accounts {
+		cpy := *acc
+		res = append(res, &cpy)
+	}
+	sort.Slice(res, func(i, j int) bool { return res[i].CreatedAt.Before(res[j].CreatedAt) })
+	return res
+}
+
 func (s *AccountStore) Get(id string) (*Account, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

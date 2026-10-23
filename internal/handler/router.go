@@ -141,6 +141,8 @@ func newRouter(ks *store.KeyStore, ms *store.ModelStore, client *opencode.Client
 	mux.HandleFunc("PUT /api/providers/opencode/accounts/{id}", compH.OpenCodeUpdateAccount)
 	mux.HandleFunc("DELETE /api/providers/opencode/accounts/{id}", compH.OpenCodeDeleteAccount)
 	mux.HandleFunc("POST /api/providers/opencode/accounts/{id}/test", compH.OpenCodeTestAccount)
+	mux.HandleFunc("GET /api/providers/opencode/quota", compH.OpenCodeGetAllQuotas)
+	mux.HandleFunc("GET /api/providers/opencode/accounts/{id}/quota", compH.OpenCodeGetAccountQuota)
 	mux.HandleFunc("GET /api/providers/chatgpt/models", compH.ChatGPTProviderModels)
 	mux.HandleFunc("PUT /api/providers/chatgpt/models", compH.UpdateChatGPTProviderModels)
 	mux.HandleFunc("GET /api/providers/chatgpt/status", compH.ChatGPTStatus)

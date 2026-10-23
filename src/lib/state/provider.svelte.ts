@@ -1,4 +1,4 @@
-import type { OpenCodeAccount, ProviderModel } from '$lib/types';
+import type { OpenCodeAccount, OpenCodeAccountUsage, ProviderModel } from '$lib/types';
 import {
 	fetchProviderModels,
 	setModelEnabled,
@@ -11,6 +11,7 @@ import {
 } from '$lib/api/providers';
 import {
 	fetchOpenCodeAccounts,
+	fetchOpenCodeQuota,
 	setOpenCodeAccountActive,
 	deleteOpenCodeAccount,
 	testOpenCodeAccount
@@ -21,8 +22,10 @@ export class ProviderState {
 	version = $state('1.19.0');
 	models = $state<ProviderModel[]>([]);
 	accounts = $state<OpenCodeAccount[]>([]);
+	usages = $state<Record<string, OpenCodeAccountUsage>>({});
 	loading = $state(false);
 	accountsLoading = $state(false);
+	quotaLoading = $state(false);
 	error = $state<string | null>(null);
 	searchQuery = $state('');
 	filter = $state<'all' | 'enabled' | 'disabled'>('all');
@@ -51,10 +54,24 @@ export class ProviderState {
 			this.models = res.models;
 			this.version = res.version;
 			await this.loadAccounts();
+			await this.loadQuota();
 		} catch (e: unknown) {
 			this.error = e instanceof Error ? e.message : 'Failed to load provider models';
 		} finally {
 			this.loading = false;
+		}
+	}
+
+	async loadQuota(accountId?: string, force = false) {
+		try {
+			this.quotaLoading = true;
+			const data = await fetchOpenCodeQuota(accountId, force);
+			this.usages = { ...this.usages, ...data };
+		} catch (e: unknown) {
+			// Quota is supplementary: keep the previous snapshot on failure.
+			console.warn('Failed to load OpenCode quota:', e);
+		} finally {
+			this.quotaLoading = false;
 		}
 	}
 

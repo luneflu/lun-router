@@ -9,7 +9,7 @@
 	import ModelTestChat from './model-test-chat.svelte';
 	import ModelListCard from './model-list-card.svelte';
 	import AccountsCard from './antigravity/accounts-card.svelte';
-	import QuotaTrackerCard from './antigravity/quota-tracker-card.svelte';
+	import QuotaTrackerCard from './quota-tracker-card.svelte';
 
 	import RocketIcon from '@lucide/svelte/icons/rocket';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
@@ -129,7 +129,24 @@
 	<AccountsCard {antigravityState} />
 
 	<!-- Quota Tracker Card -->
-	<QuotaTrackerCard {antigravityState} />
+	<QuotaTrackerCard
+		accounts={antigravityState.accounts}
+		usages={antigravityState.usages}
+		loading={antigravityState.quotaLoading}
+		summaryKeys={['gemini_session', 'gemini_weekly', 'claude_gpt_session', 'claude_gpt_weekly']}
+		onRefreshAll={() => antigravityState.loadQuota(undefined, true)}
+		onRefreshAccount={(id) => antigravityState.loadQuota(id, true)}
+		title="Quota Tracker"
+		description="Live 5h rolling session windows & weekly quotas tracked via Google Cloud Code API"
+		emptyTitle="No Accounts Connected"
+		emptyText="Connect a Google Antigravity account above to view and track your real-time API quota limits."
+		loadingText="Loading quota information from Google..."
+		noMetricsText="No quota metrics recorded yet. Click Refresh Quotas to query Google Cloud."
+		defaultPlan="Standard Tier"
+		subtitleFor={(account) => account.projectId || 'No project ID'}
+		refreshAllSuccess="Quotas Refreshed"
+		refreshAccountSuccess="Quota Updated"
+	/>
 
 	<!-- Temporary Model Testing Chat (Reused Component) -->
 	<ModelTestChat models={antigravityState.models} bind:selectedModelId={selectedChatModel} />

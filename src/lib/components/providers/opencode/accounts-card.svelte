@@ -73,7 +73,7 @@
 	}
 
 	async function handleDeleteAccount(id: string) {
-		if (!confirm('Are you sure you want to remove this OpenCode Zen key?')) return;
+		if (!confirm('Are you sure you want to remove this OpenCode login?')) return;
 		try {
 			deletingId = id;
 			await providerState.deleteAccount(id);
@@ -93,7 +93,7 @@
 	>
 		<div class="flex flex-col gap-1">
 			<div class="flex items-center gap-2">
-				<Card.Title class="text-base font-semibold">OpenCode Zen Accounts</Card.Title>
+				<Card.Title class="text-base font-semibold">OpenCode Accounts</Card.Title>
 				<Badge variant="outline" class="font-mono text-xs">
 					{providerState.activeAccountsCount} active / {providerState.totalAccountsCount} total
 				</Badge>

@@ -48,6 +48,8 @@ type Client struct {
 	modelManager   *ModelManager
 	accountStore   *AccountStore
 	refreshMu      sync.Mutex
+	quotaMu        sync.RWMutex
+	quotaCache     map[string]*AccountUsage
 }
 
 func NewClient(baseURL string, vm *VersionManager) *Client {
@@ -63,6 +65,7 @@ func NewClient(baseURL string, vm *VersionManager) *Client {
 		httpClient:     http.DefaultClient,
 		sessionManager: NewSessionManager(30 * time.Minute),
 		versionManager: vm,
+		quotaCache:     make(map[string]*AccountUsage),
 	}
 }
 

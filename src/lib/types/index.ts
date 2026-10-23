@@ -90,7 +90,7 @@ export interface OpenCodeAccount {
 	updatedAt?: string;
 }
 
-export interface AntigravityQuotaItem {
+export interface QuotaItem {
 	name: string;
 	modelKey?: string;
 	used: number;
@@ -100,14 +100,19 @@ export interface AntigravityQuotaItem {
 	unlimited?: boolean;
 }
 
-export interface AntigravityAccountUsage {
+export interface AccountUsage {
 	accountId: string;
 	email: string;
 	plan: string;
 	message?: string;
-	quotas: Record<string, AntigravityQuotaItem>;
+	quotas: Record<string, QuotaItem>;
 	fetchedAt: string;
 }
+
+export type AntigravityQuotaItem = QuotaItem;
+export type AntigravityAccountUsage = AccountUsage;
+export type OpenCodeQuotaItem = QuotaItem;
+export type OpenCodeAccountUsage = AccountUsage;
 
 export interface CompactorHit {
 	shape: string;

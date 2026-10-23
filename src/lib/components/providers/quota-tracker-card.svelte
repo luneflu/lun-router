@@ -4,8 +4,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { cn } from '$lib/utils';
 	import { toast } from '$lib/state/toast.svelte';
-	import type { AntigravityState } from '$lib/state/antigravity.svelte';
-	import type { AntigravityQuotaItem } from '$lib/types';
+	import type { AccountUsage, QuotaItem } from '$lib/types';
 
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import ActivityIcon from '@lucide/svelte/icons/activity';
@@ -14,14 +13,63 @@
 	import ChevronUpIcon from '@lucide/svelte/icons/chevron-up';
 	import ClockIcon from '@lucide/svelte/icons/clock';
 
-	interface Props {
-		antigravityState: AntigravityState;
+	export interface QuotaAccount {
+		id: string;
+		email?: string;
+		isActive: boolean;
+		subtitle?: string;
+		projectId?: string;
+		orgName?: string;
 	}
 
-	let { antigravityState }: Props = $props();
+	interface Props {
+		accounts: QuotaAccount[];
+		usages: Record<string, AccountUsage>;
+		loading: boolean;
+		summaryKeys: string[];
+		onRefreshAll: () => Promise<void>;
+		onRefreshAccount: (id: string) => Promise<void>;
+		title?: string;
+		description?: string;
+		emptyTitle?: string;
+		emptyText?: string;
+		loadingText?: string;
+		noMetricsText?: string;
+		defaultPlan?: string;
+		accent?: 'primary' | 'orange';
+		subtitleFor?: (account: QuotaAccount) => string;
+		refreshAllSuccess?: string;
+		refreshAccountSuccess?: string;
+	}
+
+	let {
+		accounts,
+		usages,
+		loading,
+		summaryKeys,
+		onRefreshAll,
+		onRefreshAccount,
+		title = 'Quota Tracker',
+		description = '',
+		emptyTitle = 'No Accounts Connected',
+		emptyText = '',
+		loadingText = 'Loading quota information...',
+		noMetricsText = 'No quota metrics recorded yet.',
+		defaultPlan = 'Standard Tier',
+		accent = 'primary',
+		subtitleFor,
+		refreshAllSuccess = 'Quotas Refreshed',
+		refreshAccountSuccess = 'Quota Updated'
+	}: Props = $props();
 
 	let refreshingAccountId = $state<string | null>(null);
 	let expandedModels = $state<Record<string, boolean>>({});
+
+	const accentClasses = $derived(
+		accent === 'orange'
+			? 'border-orange-500/20 bg-orange-500/10 text-orange-500'
+			: 'border-primary/20 bg-primary/10 text-primary'
+	);
 
 	function toggleExpanded(accountId: string) {
 		expandedModels[accountId] = !expandedModels[accountId];
@@ -29,8 +77,8 @@
 
 	async function handleRefreshAll() {
 		try {
-			await antigravityState.loadQuota(undefined, true);
-			toast.success('Quotas Refreshed', 'Fetched latest quota usage from Google API');
+			await onRefreshAll();
+			toast.success(refreshAllSuccess, 'Fetched latest quota usage');
 		} catch (e: unknown) {
 			toast.error('Quota Refresh Failed', e instanceof Error ? e.message : 'Error fetching quota');
 		}
@@ -39,8 +87,8 @@
 	async function handleRefreshAccount(accountId: string) {
 		try {
 			refreshingAccountId = accountId;
-			await antigravityState.loadQuota(accountId, true);
-			toast.success('Quota Updated', 'Refreshed quota for this account');
+			await onRefreshAccount(accountId);
+			toast.success(refreshAccountSuccess, 'Refreshed quota for this account');
 		} catch (e: unknown) {
 			toast.error('Refresh Failed', e instanceof Error ? e.message : 'Failed to fetch quota');
 		} finally {
@@ -124,25 +172,18 @@
 		};
 	}
 
-	const SUMMARY_KEYS = [
-		'gemini_session',
-		'gemini_weekly',
-		'claude_gpt_session',
-		'claude_gpt_weekly'
-	];
+	function separateQuotas(quotas: Record<string, QuotaItem> = {}) {
+		const summary: QuotaItem[] = [];
+		const models: QuotaItem[] = [];
 
-	function separateQuotas(quotas: Record<string, AntigravityQuotaItem> = {}) {
-		const summary: AntigravityQuotaItem[] = [];
-		const models: AntigravityQuotaItem[] = [];
-
-		for (const key of SUMMARY_KEYS) {
+		for (const key of summaryKeys) {
 			if (quotas[key]) {
 				summary.push(quotas[key]);
 			}
 		}
 
 		for (const [k, q] of Object.entries(quotas)) {
-			if (!SUMMARY_KEYS.includes(k)) {
+			if (!summaryKeys.includes(k)) {
 				models.push(q);
 			}
 		}
@@ -157,20 +198,23 @@
 	>
 		<div class="flex items-center gap-3">
 			<div
-				class="flex size-9 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 text-primary shadow-xs"
+				class={cn(
+					'flex size-9 items-center justify-center rounded-lg border shadow-xs',
+					accentClasses
+				)}
 			>
 				<ActivityIcon class="size-4" />
 			</div>
 			<div class="flex flex-col gap-0.5">
 				<div class="flex items-center gap-2">
-					<Card.Title class="text-base font-semibold">Quota Tracker</Card.Title>
+					<Card.Title class="text-base font-semibold">{title}</Card.Title>
 					<Badge variant="outline" class="font-mono text-xs">
-						{antigravityState.totalAccountsCount}
-						{antigravityState.totalAccountsCount === 1 ? 'account' : 'accounts'}
+						{accounts.length}
+						{accounts.length === 1 ? 'account' : 'accounts'}
 					</Badge>
 				</div>
 				<Card.Description class="text-xs text-muted-foreground">
-					Live 5h rolling session windows & weekly quotas tracked via Google Cloud Code API
+					{description}
 				</Card.Description>
 			</div>
 		</div>
@@ -179,38 +223,35 @@
 			<Button
 				variant="outline"
 				size="sm"
-				disabled={antigravityState.quotaLoading || antigravityState.totalAccountsCount === 0}
+				disabled={loading || accounts.length === 0}
 				onclick={handleRefreshAll}
 			>
-				<RefreshCwIcon
-					data-icon="inline-start"
-					class={cn('size-3.5', antigravityState.quotaLoading && 'animate-spin')}
-				/>
+				<RefreshCwIcon data-icon="inline-start" class={cn('size-3.5', loading && 'animate-spin')} />
 				Refresh Quotas
 			</Button>
 		</div>
 	</Card.Header>
 
 	<Card.Content class="p-4 sm:p-5">
-		{#if antigravityState.accounts.length === 0}
+		{#if accounts.length === 0}
 			<div class="flex flex-col items-center justify-center py-10 text-center">
 				<div
 					class="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground"
 				>
 					<ActivityIcon class="size-6" />
 				</div>
-				<h3 class="mt-3 text-sm font-medium text-foreground">No Accounts Connected</h3>
+				<h3 class="mt-3 text-sm font-medium text-foreground">{emptyTitle}</h3>
 				<p class="mt-1 max-w-sm text-xs text-muted-foreground">
-					Connect a Google Antigravity account above to view and track your real-time API quota
-					limits.
+					{emptyText}
 				</p>
 			</div>
 		{:else}
 			<div class="flex flex-col gap-5">
-				{#each antigravityState.accounts as account (account.id)}
-					{@const usage = antigravityState.usages[account.id]}
+				{#each accounts as account (account.id)}
+					{@const usage = usages[account.id]}
 					{@const isRefreshing = refreshingAccountId === account.id}
 					{@const { summary, models } = separateQuotas(usage?.quotas)}
+					{@const subtitle = subtitleFor ? subtitleFor(account) : account.subtitle}
 
 					<div class="flex flex-col rounded-xl border border-border bg-card p-4 transition-all">
 						<!-- Account Header Bar -->
@@ -227,10 +268,10 @@
 								<div class="flex flex-col">
 									<div class="flex items-center gap-2">
 										<span class="text-sm font-medium text-foreground">
-											{account.email || 'Google Account'}
+											{account.email || 'Account'}
 										</span>
 										<Badge variant="secondary" class="h-4 px-1.5 font-mono text-[10px]">
-											{usage?.plan || 'Standard Tier'}
+											{usage?.plan || defaultPlan}
 										</Badge>
 										{#if !account.isActive}
 											<Badge variant="outline" class="h-4 px-1.5 text-[10px] text-muted-foreground">
@@ -238,9 +279,11 @@
 											</Badge>
 										{/if}
 									</div>
-									<span class="font-mono text-[11px] text-muted-foreground">
-										{account.projectId || 'No project ID'}
-									</span>
+									{#if subtitle}
+										<span class="font-mono text-[11px] text-muted-foreground">
+											{subtitle}
+										</span>
+									{/if}
 								</div>
 							</div>
 
@@ -256,7 +299,7 @@
 								<Button
 									variant="ghost"
 									size="icon-xs"
-									disabled={isRefreshing || antigravityState.quotaLoading}
+									disabled={isRefreshing || loading}
 									onclick={() => handleRefreshAccount(account.id)}
 									title="Refresh account quota"
 								>
@@ -267,19 +310,19 @@
 
 						<!-- Quotas Section -->
 						<div class="mt-3.5 flex flex-col gap-3">
-							{#if !usage && antigravityState.quotaLoading}
+							{#if !usage && loading}
 								<div
 									class="flex animate-pulse items-center gap-2 py-4 text-xs text-muted-foreground"
 								>
 									<RefreshCwIcon class="size-4 animate-spin" />
-									Loading quota information from Google...
+									{loadingText}
 								</div>
+							{:else if usage?.message && !summary.length && !models.length}
+								<div class="py-3 text-xs text-muted-foreground italic">{usage.message}</div>
 							{:else if !usage || (!summary.length && !models.length)}
-								<div class="py-3 text-xs text-muted-foreground italic">
-									No quota metrics recorded yet. Click Refresh Quotas to query Google Cloud.
-								</div>
+								<div class="py-3 text-xs text-muted-foreground italic">{noMetricsText}</div>
 							{:else}
-								<!-- Primary Rolling Summary Buckets (5h & Weekly) -->
+								<!-- Primary Summary Buckets -->
 								{#if summary.length > 0}
 									<div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
 										{#each summary as item (item.modelKey || item.name)}
@@ -302,7 +345,6 @@
 													</span>
 												</div>
 
-												<!-- Progress Bar -->
 												<div
 													class={cn(
 														'h-2 w-full overflow-hidden rounded-full border',
@@ -316,13 +358,12 @@
 													></div>
 												</div>
 
-												<!-- Meta: requests and reset countdown -->
 												<div
 													class="flex items-center justify-between text-[11px] text-muted-foreground"
 												>
-													<span>
-														{item.used.toLocaleString()} / {item.total.toLocaleString()} used
-													</span>
+													<span
+														>{item.used.toLocaleString()} / {item.total.toLocaleString()} used</span
+													>
 													{#if countdown !== '-'}
 														<div class="flex items-center gap-1 font-medium text-foreground/80">
 															<ClockIcon class="size-3 text-muted-foreground" />

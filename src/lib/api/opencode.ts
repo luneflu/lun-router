@@ -1,4 +1,4 @@
-import type { OpenCodeAccount } from '$lib/types';
+import type { OpenCodeAccount, OpenCodeAccountUsage } from '$lib/types';
 
 export interface OpenCodeDeviceAuthorization {
 	ok: boolean;
@@ -82,4 +82,25 @@ export async function testOpenCodeAccount(
 		method: 'POST'
 	});
 	return res.json();
+}
+
+export async function fetchOpenCodeQuota(
+	accountId?: string,
+	force = false
+): Promise<Record<string, OpenCodeAccountUsage>> {
+	const url = accountId
+		? `/api/providers/opencode/accounts/${accountId}/quota${force ? '?force=true' : ''}`
+		: `/api/providers/opencode/quota${force ? '?force=true' : ''}`;
+
+	const res = await fetch(url);
+	if (!res.ok) {
+		const err = await res.json().catch(() => ({}));
+		throw new Error(err.error || `Failed to fetch quota: ${res.statusText}`);
+	}
+
+	const data = await res.json();
+	if (accountId) {
+		return { [accountId]: data };
+	}
+	return data.usages || {};
 }

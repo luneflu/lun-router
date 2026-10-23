@@ -160,6 +160,48 @@ func (h *CompletionHandler) OpenCodeTestAccount(w http.ResponseWriter, r *http.R
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "latency_ms": latency})
 }
 
+// GET /api/providers/opencode/accounts/{id}/quota
+func (h *CompletionHandler) OpenCodeGetAccountQuota(w http.ResponseWriter, r *http.Request) {
+	if h.client == nil || h.client.AccountStore() == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "OpenCode account store not initialized")
+		return
+	}
+
+	acc, ok := h.client.AccountStore().Get(r.PathValue("id"))
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "Account not found")
+		return
+	}
+
+	force := r.URL.Query().Get("force") == "true" || r.URL.Query().Get("force") == "1"
+	usage, err := h.client.GetAccountUsage(r.Context(), acc, force)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(usage)
+}
+
+// GET /api/providers/opencode/quota
+func (h *CompletionHandler) OpenCodeGetAllQuotas(w http.ResponseWriter, r *http.Request) {
+	if h.client == nil || h.client.AccountStore() == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "OpenCode account store not initialized")
+		return
+	}
+
+	force := r.URL.Query().Get("force") == "true" || r.URL.Query().Get("force") == "1"
+	usages, err := h.client.GetAllUsage(r.Context(), force)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"usages": usages})
+}
+
 func (h *CompletionHandler) invalidateOpenCodeCatalog() {
 	if h.client != nil && h.client.ModelManager() != nil {
 		h.client.ModelManager().InvalidateRaw()
