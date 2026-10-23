@@ -82,23 +82,6 @@ func (sm *SessionManager) Get(identity string) string {
 	return newID
 }
 
-// Rotate invalidates current session and mints a fresh one (e.g. after rate limits/429)
-func (sm *SessionManager) Rotate(identity string) string {
-	if identity == "" {
-		identity = "default"
-	}
-
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	newID := GenerateSessionID()
-	sm.sessions[identity] = &SessionEntry{
-		SessionID: newID,
-		LastUsed:  time.Now(),
-	}
-	return newID
-}
-
 // Evict drops session for identity
 func (sm *SessionManager) Evict(identity string) {
 	if identity == "" {

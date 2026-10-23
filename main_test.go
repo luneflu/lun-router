@@ -593,28 +593,18 @@ func TestOpenCodeModelEnableDisable(t *testing.T) {
 	}
 }
 
-// Test OpenCode session rotation when upstream rate limits with HTTP 429
-func TestOpenCodeSessionRotationOnRateLimit(t *testing.T) {
+// Test OpenCode rate limits are surfaced without rotating the session.
+func TestOpenCodeRateLimitDoesNotRotateSession(t *testing.T) {
 	var requestCount int
 	var sessionsSeen []string
 
 	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
-		currentSession := r.Header.Get("x-opencode-session")
-		sessionsSeen = append(sessionsSeen, currentSession)
+		sessionsSeen = append(sessionsSeen, r.Header.Get("x-opencode-session"))
 
-		if requestCount == 1 {
-			// Simulate upstream 429 FreeUsageLimitError
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"type":"error","error":{"type":"FreeUsageLimitError","message":"Session limit reached"}}`))
-			return
-		}
-
-		// Subsequent request with rotated session succeeds
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "data: {\"id\":\"cmpl-rotated\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,\"model\":\"big-pickle\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Recovered from 429!\"}}]}\n\n")
-		fmt.Fprintf(w, "data: [DONE]\n\n")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"FreeUsageLimitError","message":"Session limit reached"}}`))
 	}))
 	defer mockUpstream.Close()
 
@@ -633,66 +623,47 @@ func TestOpenCodeSessionRotationOnRateLimit(t *testing.T) {
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	// Initial session for this key
-	initialSession := client.SessionManager().Get(key.Key)
-	if initialSession == "" {
-		t.Fatalf("expected non-empty initial session")
+	send := func() int {
+		payload := map[string]any{
+			"model": "big-pickle",
+			"messages": []map[string]string{
+				{"role": "user", "content": "hello"},
+			},
+			"stream": false,
+		}
+		payloadBytes, _ := json.Marshal(payload)
+		req, _ := http.NewRequest("POST", server.URL+"/v1/chat/completions", bytes.NewReader(payloadBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+key.Key)
+
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
 	}
 
-	// Send request: it should hit 429 once, rotate session, and retry transparently
-	payload := map[string]any{
-		"model": "big-pickle",
-		"messages": []map[string]string{
-			{"role": "user", "content": "hello"},
-		},
-		"stream": false,
+	if status := send(); status != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 to be surfaced, got %d", status)
 	}
-	payloadBytes, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", server.URL+"/v1/chat/completions", bytes.NewReader(payloadBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key.Key)
-
-	resp, err := server.Client().Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 200 OK after session rotation, got %d: %s", resp.StatusCode, string(body))
+	if status := send(); status != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 on second call, got %d", status)
 	}
 
-	var res struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-
-	if res.Choices[0].Message.Content != "Recovered from 429!" {
-		t.Errorf("unexpected content: %s", res.Choices[0].Message.Content)
-	}
-
-	// Verify that 2 requests were made and the second had a DIFFERENT, brand new session ID
 	if requestCount != 2 {
-		t.Errorf("expected 2 upstream requests (initial + retry), got %d", requestCount)
+		t.Errorf("expected one upstream request per call (no retry), got %d", requestCount)
 	}
 	if len(sessionsSeen) != 2 {
 		t.Fatalf("expected 2 sessions recorded, got %d", len(sessionsSeen))
 	}
-	if sessionsSeen[0] == sessionsSeen[1] {
-		t.Errorf("expected rotated session ID on retry, but got same: %s", sessionsSeen[0])
+	if sessionsSeen[0] != sessionsSeen[1] {
+		t.Errorf("session should stay stable, got %q then %q", sessionsSeen[0], sessionsSeen[1])
 	}
 
-	// Verify the session manager now holds the new rotated session
 	currentStored := client.SessionManager().Get(key.Key)
-	if currentStored != sessionsSeen[1] {
-		t.Errorf("expected session manager to store new rotated session %s, got %s", sessionsSeen[1], currentStored)
+	if currentStored != sessionsSeen[0] {
+		t.Errorf("expected session manager to keep %s, got %s", sessionsSeen[0], currentStored)
 	}
 }
 

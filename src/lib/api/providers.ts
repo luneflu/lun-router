@@ -145,51 +145,6 @@ export async function refreshOpenCodeModels(): Promise<{
 	return res.json();
 }
 
-export interface OpenCodeProxyStatus {
-	enabled: boolean;
-	auto_on_limit: boolean;
-	total_count: number;
-	germany_count: number;
-	europe_count: number;
-	other_count: number;
-	active_proxy?: {
-		ip: string;
-		port: string;
-		country: string;
-		protocols: string[];
-		upTime: number;
-		responseTime: number;
-	};
-	active_proxy_url?: string;
-	failed_count: number;
-	last_fetch?: string;
-}
-
-export async function fetchOpenCodeProxyStatus(): Promise<OpenCodeProxyStatus> {
-	const res = await fetch('/api/providers/opencode/proxy');
-	if (!res.ok) throw new Error('Failed to fetch proxy status');
-	return res.json();
-}
-
-export async function updateOpenCodeProxy(enabled: boolean): Promise<OpenCodeProxyStatus> {
-	const res = await fetch('/api/providers/opencode/proxy', {
-		method: 'PUT',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ enabled })
-	});
-	if (!res.ok) throw new Error('Failed to update proxy status');
-	return res.json();
-}
-
-export async function refreshOpenCodeProxy(): Promise<{
-	ok: boolean;
-	status?: OpenCodeProxyStatus;
-	error?: string;
-}> {
-	const res = await fetch('/api/providers/opencode/proxy/refresh', { method: 'POST' });
-	return res.json();
-}
-
 export async function setModelEnabled(
 	provider: string = 'opencode',
 	model: string,

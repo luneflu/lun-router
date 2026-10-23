@@ -134,11 +134,11 @@
 		<div class="flex flex-col gap-1">
 			<div class="flex items-center gap-2">
 				<BotIcon class="size-4 text-primary" />
-				<Card.Title class="text-base font-semibold">OpenCode Free Completions Tester</Card.Title>
+				<Card.Title class="text-base font-semibold">OpenCode Completions Tester</Card.Title>
 				<Badge variant="secondary" class="font-mono text-[10px]">/v1/chat/completions</Badge>
 			</div>
 			<Card.Description class="text-xs">
-				Test completions against upstream OpenCode Free with automatic session headers and
+				Test completions against upstream OpenCode with automatic session headers and
 				fingerprinting.
 			</Card.Description>
 		</div>

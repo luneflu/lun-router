@@ -97,6 +97,14 @@ func (mm *ModelManager) GetRawJSON() []byte {
 	return nil
 }
 
+// InvalidateRaw drops the cached upstream catalog so the next read re-fetches
+// it (used when an OpenCode Go account is connected or removed).
+func (mm *ModelManager) InvalidateRaw() {
+	mm.mu.Lock()
+	mm.rawJSON = nil
+	mm.mu.Unlock()
+}
+
 func (mm *ModelManager) CheckAndUpdate(ctx context.Context) ([]string, bool, error) {
 	if mm.client == nil {
 		return mm.GetModels(), false, fmt.Errorf("client not initialized")

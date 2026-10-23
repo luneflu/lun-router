@@ -10,11 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"lun-router/internal/usage"
@@ -42,11 +41,13 @@ var FallbackModels = []string{
 
 type Client struct {
 	baseURL        string
+	consoleBaseURL string
 	httpClient     *http.Client
 	sessionManager *SessionManager
 	versionManager *VersionManager
 	modelManager   *ModelManager
-	proxyManager   *ProxyManager
+	accountStore   *AccountStore
+	refreshMu      sync.Mutex
 }
 
 func NewClient(baseURL string, vm *VersionManager) *Client {
@@ -58,6 +59,7 @@ func NewClient(baseURL string, vm *VersionManager) *Client {
 	}
 	return &Client{
 		baseURL:        baseURL,
+		consoleBaseURL: ConsoleBaseURL,
 		httpClient:     http.DefaultClient,
 		sessionManager: NewSessionManager(30 * time.Minute),
 		versionManager: vm,
@@ -80,12 +82,40 @@ func (c *Client) SetModelManager(mm *ModelManager) {
 	c.modelManager = mm
 }
 
-func (c *Client) ProxyManager() *ProxyManager {
-	return c.proxyManager
+func (c *Client) AccountStore() *AccountStore {
+	return c.accountStore
 }
 
-func (c *Client) SetProxyManager(pm *ProxyManager) {
-	c.proxyManager = pm
+func (c *Client) SetAccountStore(store *AccountStore) {
+	c.accountStore = store
+}
+
+// IsFreeTierModel reports whether a model is served by the attested free-tier
+// identity (Bearer public) instead of the OpenCode Go keyed lane.
+func IsFreeTierModel(model string) bool {
+	clean := baseModelID(model)
+	if slash := strings.LastIndex(clean, "/"); slash != -1 {
+		clean = clean[slash+1:]
+	}
+	clean = strings.ToLower(clean)
+	// big-pickle has no "-free" suffix but lives on the free catalog.
+	return clean == "big-pickle" || strings.HasSuffix(clean, "-free")
+}
+
+// IsResponsesModel reports whether a model is served by the Responses endpoint.
+func IsResponsesModel(model string) bool {
+	clean := strings.ToLower(baseModelID(model))
+	return strings.Contains(clean, "muse-spark") ||
+		strings.HasPrefix(clean, "grok-") ||
+		strings.HasPrefix(clean, "gpt-")
+}
+
+func baseModelID(model string) string {
+	clean := strings.TrimSpace(model)
+	if idx := strings.LastIndex(clean, "("); idx != -1 && strings.HasSuffix(clean, ")") {
+		clean = strings.TrimSpace(clean[:idx])
+	}
+	return clean
 }
 
 // FetchModels retrieves the catalog from OpenCode Free (uses cached if available)
@@ -98,9 +128,13 @@ func (c *Client) FetchModels(ctx context.Context) ([]byte, error) {
 	return c.FetchModelsDirect(ctx)
 }
 
-// FetchModelsDirect directly queries upstream OpenCode Free models endpoint
-func (c *Client) FetchModelsDirect(ctx context.Context) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/zen/v1/models", nil)
+type modelCatalog struct {
+	Object string           `json:"object"`
+	Data   []map[string]any `json:"data"`
+}
+
+func (c *Client) fetchModelCatalog(ctx context.Context, path string) (*modelCatalog, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +155,45 @@ func (c *Client) FetchModelsDirect(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("upstream models status: %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var catalog modelCatalog
+	if err := json.Unmarshal(raw, &catalog); err != nil {
+		return nil, fmt.Errorf("decode models response: %w", err)
+	}
+	return &catalog, nil
+}
+
+// FetchModelsDirect queries the free catalog and, when an OAuth account is
+// configured, merges the OpenCode Go catalog so Go-only models are selectable.
+func (c *Client) FetchModelsDirect(ctx context.Context) ([]byte, error) {
+	catalog, err := c.fetchModelCatalog(ctx, "/zen/v1/models")
+	if err != nil {
+		return nil, err
+	}
+
+	if c.accountStore != nil && c.accountStore.FirstActive() != nil {
+		if goCatalog, err := c.fetchModelCatalog(ctx, "/zen/go/v1/models"); err == nil {
+			seen := make(map[string]bool, len(catalog.Data))
+			for _, model := range catalog.Data {
+				if id, ok := model["id"].(string); ok {
+					seen[id] = true
+				}
+			}
+			for _, model := range goCatalog.Data {
+				id, _ := model["id"].(string)
+				if id != "" && !seen[id] {
+					seen[id] = true
+					catalog.Data = append(catalog.Data, model)
+				}
+			}
+		}
+	}
+
+	catalog.Object = "list"
+	return json.Marshal(catalog)
 }
 
 // ExecuteChat sends chat request to OpenCode Free with Issue #4781 bypass headers.
@@ -153,7 +225,7 @@ func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any, identi
 	// Upstream always requires stream: true
 	bodyMap["stream"] = true
 
-	isResponses := strings.Contains(model, "muse-spark")
+	isResponses := IsResponsesModel(model)
 	if isResponses {
 		if thinkingEffort != "" {
 			if thinkingEffort == "max" || thinkingEffort == "ultra" {
@@ -226,12 +298,33 @@ func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any, identi
 		sanitizeAssistantReasoning(bodyMap)
 	}
 
-	// Apply required fingerprint tools (read and shell for v2)
-	ApplyFingerprint(bodyMap, isResponses)
+	sessionID := customSession
+	if sessionID == "" {
+		sessionID = c.sessionManager.Get(identity)
+	}
 
-	targetURL := c.baseURL + "/inference/v1/chat/completions"
-	if isResponses {
-		targetURL = c.baseURL + "/inference/v1/responses"
+	// Accounts are sticky per session. With an OAuth login, paid models use the
+	// OpenCode Go lane; free-only models and anonymous requests stay on the
+	// public free lane.
+	account := c.selectAccount(sessionID)
+	lane := "/inference/v1"
+	auth := "Bearer public"
+	withRequestID := true
+	headers := map[string]string{}
+	if account != nil && !IsFreeTierModel(model) {
+		fresh, err := c.ensureFreshAccount(ctx, account)
+		if err != nil {
+			return nil, err
+		}
+		lane = "/zen/go/v1"
+		auth = "Bearer " + fresh.AccessToken
+		withRequestID = false
+		if fresh.OrgID != "" {
+			headers["x-opencode-org-id"] = fresh.OrgID
+		}
+	} else {
+		// The free-tier gate requires the file-search quartet.
+		ApplyFingerprint(bodyMap, isResponses)
 	}
 
 	payloadBytes, err := json.Marshal(bodyMap)
@@ -239,144 +332,19 @@ func (c *Client) ExecuteChat(ctx context.Context, bodyMap map[string]any, identi
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	sessionID := customSession
-	if sessionID == "" {
-		sessionID = c.sessionManager.Get(identity)
+	targetURL := c.baseURL + lane + "/chat/completions"
+	if isResponses {
+		targetURL = c.baseURL + lane + "/responses"
 	}
 
-	// Pick initial HTTP client (direct connection)
-	var initialClient *http.Client
-	/* Proxy rotation commented out - keeping original IP
-	if c.canUseProxy(targetURL) && c.proxyManager.IsEnabled() {
-		initialClient = c.proxyManager.GetActiveClient()
-		if initialClient == nil {
-			if nextP := c.proxyManager.NextProxy(); nextP != nil {
-				initialClient, _ = c.proxyManager.ClientForProxy(nextP)
-			}
-		}
-	}
-	*/
-
-	resp, err := c.doRequest(ctx, targetURL, payloadBytes, sessionID, initialClient)
-	if err != nil {
-		/* Proxy retry commented out
-		if c.canUseProxy(targetURL) && initialClient != nil {
-			if act := c.proxyManager.ActiveProxy(); act != nil {
-				c.proxyManager.MarkFailed(act, err.Error())
-			}
-			return c.executeWithProxyRetry(ctx, targetURL, payloadBytes, sessionID)
-		}
-		*/
-		return nil, err
-	}
-
-	// If rate-limited (429 / free usage limit error): rotate session ID and retry once directly
-	if c.isFreeLimit(resp) {
-		resp.Body.Close()
-
-		newSessionID := c.sessionManager.Rotate(identity)
-		log.Printf("[opencode] rate limit hit (429). Rotated session to %s, retrying directly...", newSessionID)
-
-		/* Proxy failover commented out
-		if c.canUseProxy(targetURL) {
-			log.Printf("[opencode] free limit or IP gate hit (%d). Switching to proxy pool (DE/Europe priority)...", resp.StatusCode)
-			c.proxyManager.EnsureLoaded(ctx)
-			return c.executeWithProxyRetry(ctx, targetURL, payloadBytes, newSessionID)
-		}
-		*/
-
-		// Direct retry with fresh session ID
-		return c.doRequest(ctx, targetURL, payloadBytes, newSessionID, nil)
-	}
-
-	return resp, nil
+	return c.doRequest(ctx, targetURL, payloadBytes, sessionID, auth, withRequestID, headers)
 }
 
-func (c *Client) isFreeLimit(resp *http.Response) bool {
-	if resp == nil {
-		return false
+func (c *Client) selectAccount(sessionID string) *Account {
+	if c.accountStore == nil {
+		return nil
 	}
-	return resp.StatusCode == http.StatusTooManyRequests
-}
-
-func (c *Client) isFreeLimitOrBlocked(resp *http.Response) bool {
-	if resp == nil {
-		return false
-	}
-	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden
-}
-
-func isLocalhost(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	h := u.Hostname()
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
-}
-
-func (c *Client) canUseProxy(targetURL string) bool {
-	if c.proxyManager == nil {
-		return false
-	}
-	// If target is localhost, only allow if configured proxy is also localhost (e.g. in tests)
-	if isLocalhost(targetURL) {
-		p := c.proxyManager.ActiveProxy()
-		if p == nil {
-			p = c.proxyManager.NextProxy()
-		}
-		if p == nil || !isLocalhost("http://"+p.Key()) {
-			return false
-		}
-	}
-	return true
-}
-
-func (c *Client) executeWithProxyRetry(ctx context.Context, targetURL string, payloadBytes []byte, sessionID string) (*http.Response, error) {
-	const maxProxyAttempts = 5
-	var lastErr error
-
-	for attempt := 0; attempt < maxProxyAttempts; attempt++ {
-		proxy := c.proxyManager.NextProxy()
-		if proxy == nil {
-			break
-		}
-
-		proxyClient, err := c.proxyManager.ClientForProxy(proxy)
-		if err != nil {
-			c.proxyManager.MarkFailed(proxy, err.Error())
-			continue
-		}
-
-		log.Printf("[opencode-proxy] attempt %d/%d via %s (%s, prio=%d, uptime=%.1f%%, resp=%.0fms)",
-			attempt+1, maxProxyAttempts, proxy.Key(), proxy.Country, proxy.Priority, proxy.UpTime, proxy.EffectiveLatency())
-
-		resp, err := c.doRequest(ctx, targetURL, payloadBytes, sessionID, proxyClient)
-		if err != nil {
-			log.Printf("[opencode-proxy] proxy %s failed: %v", proxy.Key(), err)
-			c.proxyManager.MarkFailed(proxy, err.Error())
-			lastErr = err
-			continue
-		}
-
-		if c.isFreeLimitOrBlocked(resp) {
-			resp.Body.Close()
-			log.Printf("[opencode-proxy] proxy %s also returned %d", proxy.Key(), resp.StatusCode)
-			c.proxyManager.MarkFailed(proxy, fmt.Sprintf("status %d", resp.StatusCode))
-			sessionID = c.sessionManager.Rotate(sessionID)
-			continue
-		}
-
-		// Succeeded!
-		c.proxyManager.MarkSuccess(proxy)
-		log.Printf("[opencode-proxy] success via proxy %s (%s)", proxy.Key(), proxy.Country)
-		return resp, nil
-	}
-
-	if lastErr != nil {
-		return nil, fmt.Errorf("all proxy attempts failed: %w", lastErr)
-	}
-	return nil, fmt.Errorf("all proxy attempts returned rate limit (429)")
+	return c.accountStore.SelectForSession(sessionID)
 }
 
 func generateRequestID() string {
@@ -394,31 +362,31 @@ func generateRequestID() string {
 	return fmt.Sprintf("msg_%s%s", timePart, randomPart.String())
 }
 
-func (c *Client) doRequest(ctx context.Context, targetURL string, payloadBytes []byte, sessionID string, httpClient *http.Client) (*http.Response, error) {
+func (c *Client) doRequest(ctx context.Context, targetURL string, payloadBytes []byte, sessionID, auth string, withRequestID bool, extraHeaders map[string]string) (*http.Response, error) {
 	upReq, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(payloadBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	reqID := generateRequestID()
-
-	// Aligned Custom Headers for OpenCode Free v2 (/inference/v1)
+	// Aligned Custom Headers for OpenCode Zen/Go v2.
 	upReq.Header.Set("User-Agent", c.versionManager.GetUserAgent())
 	upReq.Header.Set("x-opencode-client", ClientType)
 	upReq.Header.Set("x-opencode-project", Project)
 	upReq.Header.Set("x-opencode-session", sessionID)
 	upReq.Header.Set("x-opencode-session-id", sessionID)
-	upReq.Header.Set("x-opencode-request", reqID)
+	if withRequestID {
+		upReq.Header.Set("x-opencode-request", generateRequestID())
+	}
 	upReq.Header.Set("x-session-affinity", sessionID)
 	upReq.Header.Set("X-Session-Id", sessionID)
-	upReq.Header.Set("Authorization", "Bearer public")
+	upReq.Header.Set("Authorization", auth)
 	upReq.Header.Set("Content-Type", "application/json")
 	upReq.Header.Set("Accept", "text/event-stream")
-
-	if httpClient == nil {
-		httpClient = c.httpClient
+	for k, v := range extraHeaders {
+		upReq.Header.Set(k, v)
 	}
-	return httpClient.Do(upReq)
+
+	return c.httpClient.Do(upReq)
 }
 
 // AggregateSSEStream parses incoming SSE stream into a standard OpenAI ChatCompletion response

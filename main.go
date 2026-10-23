@@ -86,13 +86,11 @@ func main() {
 	vm.StartBackgroundSync(context.Background())
 
 	client := opencode.NewClient("", vm)
-	pm := opencode.NewProxyManager(dataDir)
-	client.SetProxyManager(pm)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		pm.EnsureLoaded(ctx)
-	}()
+	accountStore, err := opencode.NewAccountStore(dataDir)
+	if err != nil {
+		log.Fatalf("Failed to initialize OpenCode AccountStore: %v", err)
+	}
+	client.SetAccountStore(accountStore)
 
 	mm := opencode.NewModelManager(dataDir, client, 1*time.Hour)
 	mm.StartBackgroundSync(context.Background())

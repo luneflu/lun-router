@@ -216,7 +216,7 @@
 						></span>
 					</div>
 					<div class="flex flex-col items-start text-start">
-						<span>OpenCode Free</span>
+						<span>OpenCode</span>
 					</div>
 				</div>
 

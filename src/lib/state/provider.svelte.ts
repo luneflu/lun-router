@@ -1,4 +1,4 @@
-import type { ProviderModel } from '$lib/types';
+import type { OpenCodeAccount, ProviderModel } from '$lib/types';
 import {
 	fetchProviderModels,
 	setModelEnabled,
@@ -9,12 +9,20 @@ import {
 	deleteCustomModel as apiDeleteCustomModel,
 	type CreateCustomModelPayload
 } from '$lib/api/providers';
+import {
+	fetchOpenCodeAccounts,
+	setOpenCodeAccountActive,
+	deleteOpenCodeAccount,
+	testOpenCodeAccount
+} from '$lib/api/opencode';
 
 export class ProviderState {
 	provider = $state('opencode');
 	version = $state('1.19.0');
 	models = $state<ProviderModel[]>([]);
+	accounts = $state<OpenCodeAccount[]>([]);
 	loading = $state(false);
+	accountsLoading = $state(false);
 	error = $state<string | null>(null);
 	searchQuery = $state('');
 	filter = $state<'all' | 'enabled' | 'disabled'>('all');
@@ -32,6 +40,8 @@ export class ProviderState {
 	totalCount = $derived(this.models.length);
 	enabledCount = $derived(this.models.filter((m) => m.enabled).length);
 	disabledCount = $derived(this.models.filter((m) => !m.enabled).length);
+	totalAccountsCount = $derived(this.accounts.length);
+	activeAccountsCount = $derived(this.accounts.filter((a) => a.isActive).length);
 
 	async load() {
 		try {
@@ -40,11 +50,47 @@ export class ProviderState {
 			const res = await fetchProviderModels(this.provider);
 			this.models = res.models;
 			this.version = res.version;
+			await this.loadAccounts();
 		} catch (e: unknown) {
 			this.error = e instanceof Error ? e.message : 'Failed to load provider models';
 		} finally {
 			this.loading = false;
 		}
+	}
+
+	async loadAccounts() {
+		try {
+			this.accountsLoading = true;
+			this.accounts = await fetchOpenCodeAccounts();
+		} finally {
+			this.accountsLoading = false;
+		}
+	}
+
+	async toggleAccount(id: string, active: boolean) {
+		const prev = this.accounts;
+		this.accounts = this.accounts.map((a) => (a.id === id ? { ...a, isActive: active } : a));
+		try {
+			await setOpenCodeAccountActive(id, active);
+		} catch (e: unknown) {
+			this.accounts = prev;
+			throw e;
+		}
+	}
+
+	async deleteAccount(id: string) {
+		const prev = this.accounts;
+		this.accounts = this.accounts.filter((a) => a.id !== id);
+		try {
+			await deleteOpenCodeAccount(id);
+		} catch (e: unknown) {
+			this.accounts = prev;
+			throw e;
+		}
+	}
+
+	async testAccount(id: string) {
+		return await testOpenCodeAccount(id);
 	}
 
 	async checkVersionUpdate() {

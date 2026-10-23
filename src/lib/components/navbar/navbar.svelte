@@ -84,7 +84,7 @@
 				{:else}
 					<span class="text-muted-foreground">Providers</span>
 					<ChevronRightIcon class="size-3 text-muted-foreground/60" />
-					<span class="font-semibold text-foreground">OpenCode Free</span>
+					<span class="font-semibold text-foreground">OpenCode</span>
 				{/if}
 			</div>
 		</div>

@@ -76,6 +76,20 @@ export interface CommandCodeAccount {
 	createdAt: string;
 }
 
+export interface OpenCodeAccount {
+	id: string;
+	email?: string;
+	server?: string;
+	orgId?: string;
+	orgName?: string;
+	accessToken?: string;
+	refreshToken?: string;
+	expiresAt?: string;
+	isActive: boolean;
+	createdAt: string;
+	updatedAt?: string;
+}
+
 export interface AntigravityQuotaItem {
 	name: string;
 	modelKey?: string;
