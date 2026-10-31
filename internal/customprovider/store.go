@@ -66,7 +66,7 @@ func (s *Store) load() error {
 	s.items = make(map[string]Provider)
 	for _, p := range list {
 		if p.Models == nil {
-			p.Models = []string{}
+			p.Models = []Model{}
 		}
 		s.items[p.ID] = p
 	}
@@ -176,7 +176,7 @@ func (s *Store) FindByModel(modelID string) (Provider, bool) {
 			continue
 		}
 		for _, m := range p.Models {
-			if m == clean {
+			if m.ID == clean {
 				return p, true
 			}
 		}
@@ -220,7 +220,7 @@ func (s *Store) Add(p Provider) (Provider, error) {
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	if p.Models == nil {
-		p.Models = []string{}
+		p.Models = []Model{}
 	}
 
 	s.items[p.ID] = p
@@ -299,20 +299,35 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 }
 
 // SetModels updates models list for a provider.
-func (s *Store) SetModels(id string, models []string) error {
+func (s *Store) SetModels(id string, models []Model) error {
 	_, err := s.Update(id, func(p *Provider) error {
-		unique := make([]string, 0, len(models))
+		unique := make([]Model, 0, len(models))
 		seen := make(map[string]bool)
 		for _, m := range models {
-			m = strings.TrimSpace(m)
-			if m != "" && !seen[m] {
-				seen[m] = true
+			m.ID = strings.TrimSpace(m.ID)
+			if m.ID != "" && !seen[m.ID] {
+				seen[m.ID] = true
 				unique = append(unique, m)
 			}
 		}
-		sort.Strings(unique)
+		sort.Slice(unique, func(i, j int) bool {
+			return unique[i].ID < unique[j].ID
+		})
 		p.Models = unique
 		return nil
 	})
 	return err
+}
+
+// SetModelIDs updates models list from string IDs.
+func (s *Store) SetModelIDs(id string, modelIDs []string) error {
+	models := make([]Model, len(modelIDs))
+	for i, id := range modelIDs {
+		models[i] = Model{
+			ID:    id,
+			Name:  id,
+			Input: []string{"text"},
+		}
+	}
+	return s.SetModels(id, models)
 }

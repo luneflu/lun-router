@@ -66,11 +66,12 @@ func (h *CustomProviderHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 type CreateProviderPayload struct {
-	Name      string `json:"name"`
-	Prefix    string `json:"prefix"`
-	BaseURL   string `json:"baseUrl"`
-	APIKey    string `json:"apiKey,omitempty"`
-	IsEnabled *bool  `json:"isEnabled,omitempty"`
+	Name      string                         `json:"name"`
+	Prefix    string                         `json:"prefix"`
+	BaseURL   string                         `json:"baseUrl"`
+	APIKey    string                         `json:"apiKey,omitempty"`
+	IsEnabled *bool                          `json:"isEnabled,omitempty"`
+	Compat    *customprovider.ProviderCompat `json:"compat,omitempty"`
 }
 
 // POST /api/providers/custom - Create a new custom provider
@@ -99,6 +100,7 @@ func (h *CustomProviderHandler) Create(w http.ResponseWriter, r *http.Request) {
 		BaseURL:   payload.BaseURL,
 		APIKey:    payload.APIKey,
 		IsEnabled: enabled,
+		Compat:    payload.Compat,
 	})
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -116,11 +118,12 @@ func (h *CustomProviderHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 type UpdateProviderPayload struct {
-	Name      string `json:"name"`
-	Prefix    string `json:"prefix"`
-	BaseURL   string `json:"baseUrl"`
-	APIKey    *string `json:"apiKey,omitempty"`
-	IsEnabled *bool   `json:"isEnabled,omitempty"`
+	Name      string                         `json:"name"`
+	Prefix    string                         `json:"prefix"`
+	BaseURL   string                         `json:"baseUrl"`
+	APIKey    *string                        `json:"apiKey,omitempty"`
+	IsEnabled *bool                          `json:"isEnabled,omitempty"`
+	Compat    *customprovider.ProviderCompat `json:"compat,omitempty"`
 }
 
 // PUT /api/providers/custom/{id} - Update custom provider
@@ -155,6 +158,9 @@ func (h *CustomProviderHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		if payload.IsEnabled != nil {
 			p.IsEnabled = *payload.IsEnabled
+		}
+		if payload.Compat != nil {
+			p.Compat = payload.Compat
 		}
 		return nil
 	})
@@ -226,11 +232,17 @@ func (h *CustomProviderHandler) SyncModels(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	modelIDs := make([]string, len(models))
+	for i, m := range models {
+		modelIDs[i] = m.ID
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":     true,
-		"count":  len(models),
-		"models": models,
+		"ok":           true,
+		"count":        len(models),
+		"models":       modelIDs,
+		"modelDetails": models,
 	})
 }
 
@@ -250,15 +262,43 @@ func (h *CustomProviderHandler) ListModels(w http.ResponseWriter, r *http.Reques
 	seen := make(map[string]bool)
 
 	for _, m := range p.Models {
-		seen[m] = true
-		enabled := h.modelStore == nil || !h.modelStore.IsDisabled(p.Prefix, m)
+		seen[m.ID] = true
+		enabled := h.modelStore == nil || !h.modelStore.IsDisabled(p.Prefix, m.ID)
 		item := ModelItem{
-			ID:      prefix + m,
+			ID:      prefix + m.ID,
+			Name:    m.Name,
 			Object:  "model",
 			OwnedBy: p.Prefix,
 			Enabled: enabled,
 		}
 		model.EnrichModelItem(&item, p.Prefix)
+		if m.ContextWindow > 0 {
+			item.ContextLength = m.ContextWindow
+			if item.Capabilities != nil {
+				item.Capabilities.ContextWindow = m.ContextWindow
+			}
+		}
+		if m.MaxTokens > 0 {
+			item.MaxCompletionTokens = m.MaxTokens
+			if item.Capabilities != nil {
+				item.Capabilities.MaxOutput = m.MaxTokens
+			}
+		}
+		if m.Reasoning != nil {
+			if item.Capabilities == nil {
+				item.Capabilities = &model.ModelCapabilities{}
+			}
+			item.Capabilities.Reasoning = *m.Reasoning
+		}
+		for _, inp := range m.Input {
+			if inp == "image" {
+				if item.Capabilities == nil {
+					item.Capabilities = &model.ModelCapabilities{}
+				}
+				item.Capabilities.Vision = true
+				break
+			}
+		}
 		models = append(models, item)
 	}
 

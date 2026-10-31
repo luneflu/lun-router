@@ -20,6 +20,7 @@ type ModelCapabilities struct {
 // ModelItem represents an OpenAI-compatible model object with capabilities metadata.
 type ModelItem struct {
 	ID                  string             `json:"id"`
+	Name                string             `json:"name,omitempty"`
 	Object              string             `json:"object"`
 	OwnedBy             string             `json:"owned_by"`
 	Enabled             bool               `json:"enabled"`

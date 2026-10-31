@@ -293,15 +293,43 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 			prefix := cp.Prefix + "/"
 			seenModels := make(map[string]bool)
 			for _, m := range cp.Models {
-				seenModels[m] = true
-				if h.modelStore == nil || !h.modelStore.IsDisabled(cp.Prefix, m) {
+				seenModels[m.ID] = true
+				if h.modelStore == nil || !h.modelStore.IsDisabled(cp.Prefix, m.ID) {
 					item := ModelItem{
-						ID:      prefix + m,
+						ID:      prefix + m.ID,
+						Name:    m.Name,
 						Object:  "model",
 						OwnedBy: cp.Prefix,
 						Enabled: true,
 					}
 					model.EnrichModelItem(&item, cp.Prefix)
+					if m.ContextWindow > 0 {
+						item.ContextLength = m.ContextWindow
+						if item.Capabilities != nil {
+							item.Capabilities.ContextWindow = m.ContextWindow
+						}
+					}
+					if m.MaxTokens > 0 {
+						item.MaxCompletionTokens = m.MaxTokens
+						if item.Capabilities != nil {
+							item.Capabilities.MaxOutput = m.MaxTokens
+						}
+					}
+					if m.Reasoning != nil {
+						if item.Capabilities == nil {
+							item.Capabilities = &model.ModelCapabilities{}
+						}
+						item.Capabilities.Reasoning = *m.Reasoning
+					}
+					for _, inp := range m.Input {
+						if inp == "image" {
+							if item.Capabilities == nil {
+								item.Capabilities = &model.ModelCapabilities{}
+							}
+							item.Capabilities.Vision = true
+							break
+						}
+					}
 					filtered = append(filtered, item)
 				}
 			}
