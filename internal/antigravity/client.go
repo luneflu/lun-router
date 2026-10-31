@@ -1230,12 +1230,27 @@ func convertOpenAIMessagesToGemini(messages any, model string) ([]map[string]any
 		}
 	}
 
+	// Build tool responses cache from tool messages (matches 9router)
+	toolResponses := make(map[string]any)
+	for _, m := range msgList {
+		if role, _ := m["role"].(string); role == "tool" {
+			if toolCallID, ok := m["tool_call_id"].(string); ok && toolCallID != "" {
+				toolResponses[toolCallID] = m["content"]
+			}
+		}
+	}
+
 	var systemParts []map[string]any
 	var rawContents []map[string]any
 	hasMultiple := len(msgList) > 1
 
-	for _, m := range msgList {
+	for i, m := range msgList {
 		role, _ := m["role"].(string)
+
+		// Tool messages are consumed via toolResponses pairing with assistant tool_calls
+		if role == "tool" {
+			continue
+		}
 
 		if role == "system" && hasMultiple {
 			txt := extractText(m["content"])
@@ -1245,22 +1260,26 @@ func convertOpenAIMessagesToGemini(messages any, model string) ([]map[string]any
 			continue
 		}
 
-		geminiRole := "user"
-		if role == "assistant" {
-			geminiRole = "model"
+		if role == "user" || (role == "system" && !hasMultiple) {
+			contentParts := convertOpenAIContentToParts(m["content"])
+			if len(contentParts) > 0 {
+				rawContents = append(rawContents, map[string]any{
+					"role":  "user",
+					"parts": contentParts,
+				})
+			}
+			continue
 		}
 
-		var parts []map[string]any
-
-		if role != "tool" {
+		if role == "assistant" {
+			var parts []map[string]any
 			contentParts := convertOpenAIContentToParts(m["content"])
 			parts = append(parts, contentParts...)
-		}
 
-		if role == "assistant" {
+			var toolCallIDs []string
 			if toolCalls, ok := m["tool_calls"].([]any); ok && len(toolCalls) > 0 {
 				firstCall := true
-				for _, tc := range toolCalls {
+				for idx, tc := range toolCalls {
 					if tcMap, ok := tc.(map[string]any); ok {
 						fn, _ := tcMap["function"].(map[string]any)
 						fnName, _ := fn["name"].(string)
@@ -1272,13 +1291,14 @@ func convertOpenAIMessagesToGemini(messages any, model string) ([]map[string]any
 							args = map[string]any{}
 						}
 						callID, _ := tcMap["id"].(string)
+						if callID == "" {
+							callID = fmt.Sprintf("%s-%d-%d", fnName, time.Now().UnixMilli(), idx)
+						}
 						fc := map[string]any{
 							"name": sanitizeGeminiFunctionName(fnName),
 							"args": args,
 						}
-						if callID != "" {
-							fc["id"] = callID
-						}
+						fc["id"] = callID
 						callPart := map[string]any{
 							"functionCall": fc,
 						}
@@ -1289,46 +1309,78 @@ func convertOpenAIMessagesToGemini(messages any, model string) ([]map[string]any
 							firstCall = false
 						}
 						parts = append(parts, callPart)
+						toolCallIDs = append(toolCallIDs, callID)
 					}
 				}
 			}
-		}
 
-		if role == "tool" {
-			geminiRole = "user"
-			toolCallID, _ := m["tool_call_id"].(string)
-			respContent := extractText(m["content"])
-			var parsedResp any
-			if err := json.Unmarshal([]byte(respContent), &parsedResp); err != nil {
-				parsedResp = respContent
+			if len(parts) > 0 {
+				rawContents = append(rawContents, map[string]any{
+					"role":  "model",
+					"parts": parts,
+				})
 			}
-			fnName := tcID2Name[toolCallID]
-			if fnName == "" {
-				fnName = "tool"
-			}
-			fr := map[string]any{
-				"name":     sanitizeGeminiFunctionName(fnName),
-				"response": map[string]any{"result": parsedResp},
-			}
-			if toolCallID != "" {
-				fr["id"] = toolCallID
-			}
-			parts = append(parts, map[string]any{"functionResponse": fr})
-		}
 
-		// functionResponse parts always belong in a user turn
-		for _, p := range parts {
-			if _, ok := p["functionResponse"]; ok {
-				geminiRole = "user"
-				break
-			}
-		}
+			// Pair tool responses immediately with assistant tool_calls (matches 9router).
+			// If intermediate (e.g. aborted before tool responded, followed by user prompt),
+			// synthesize empty responses so Gemini's functionCall -> functionResponse invariant holds.
+			if len(toolCallIDs) > 0 {
+				isIntermediate := i < len(msgList)-1
+				hasActualResponses := false
+				for _, fid := range toolCallIDs {
+					if _, ok := toolResponses[fid]; ok {
+						hasActualResponses = true
+						break
+					}
+				}
 
-		if len(parts) > 0 {
-			rawContents = append(rawContents, map[string]any{
-				"role":  geminiRole,
-				"parts": parts,
-			})
+				if hasActualResponses || isIntermediate {
+					var toolParts []map[string]any
+					for _, fid := range toolCallIDs {
+						resp, hasResp := toolResponses[fid]
+						respContent := ""
+						if hasResp {
+							respContent = extractText(resp)
+						}
+
+						name := tcID2Name[fid]
+						if name == "" {
+							idParts := strings.Split(fid, "-")
+							if len(idParts) > 2 {
+								name = strings.Join(idParts[:len(idParts)-2], "-")
+							} else {
+								name = fid
+							}
+						}
+
+						var parsedResp any
+						if respContent != "" {
+							if err := json.Unmarshal([]byte(respContent), &parsedResp); err != nil {
+								parsedResp = respContent
+							}
+						} else {
+							parsedResp = ""
+						}
+
+						fr := map[string]any{
+							"name": sanitizeGeminiFunctionName(name),
+							"response": map[string]any{
+								"result": parsedResp,
+							},
+						}
+						if fid != "" {
+							fr["id"] = fid
+						}
+						toolParts = append(toolParts, map[string]any{"functionResponse": fr})
+					}
+					if len(toolParts) > 0 {
+						rawContents = append(rawContents, map[string]any{
+							"role":  "user",
+							"parts": toolParts,
+						})
+					}
+				}
+			}
 		}
 	}
 
@@ -1535,11 +1587,19 @@ func normalizeGeminiContents(contents []map[string]any) []map[string]any {
 			responses := make([]map[string]any, 0, len(fnCalls))
 			for _, call := range fnCalls {
 				name, _ := call["name"].(string)
-				if name == "" {
-					name = "tool"
+				if name == "" || name == "tool" {
+					if id, ok := call["id"].(string); ok && id != "" {
+						idParts := strings.Split(id, "-")
+						if len(idParts) > 2 {
+							name = strings.Join(idParts[:len(idParts)-2], "-")
+						}
+					}
+					if name == "" {
+						name = "tool"
+					}
 				}
 				fr := map[string]any{
-					"name":     name,
+					"name":     sanitizeGeminiFunctionName(name),
 					"response": map[string]any{"result": "Continue."},
 				}
 				if id, ok := call["id"].(string); ok && id != "" {

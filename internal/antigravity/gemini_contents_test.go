@@ -251,4 +251,100 @@ func TestConvertOpenAIMessagesToGeminiMultiTurn(t *testing.T) {
 	if fr["id"] != "call_abc" {
 		t.Errorf("expected functionResponse id 'call_abc', got %v", fr["id"])
 	}
+
+	// Verify aborted tool call (no tool response, followed by user prompt)
+	abortedHistory := []any{
+		map[string]any{"role": "user", "content": "list files"},
+		map[string]any{
+			"role":    "assistant",
+			"content": nil,
+			"tool_calls": []any{
+				map[string]any{
+					"id":   "search_files-1711111111111-0",
+					"type": "function",
+					"function": map[string]any{
+						"name":      "search_files",
+						"arguments": `{"q":"test"}`,
+					},
+				},
+			},
+		},
+		map[string]any{
+			"role":    "user",
+			"content": "Nevermind, do something else",
+		},
+	}
+	abortedContents, _ := convertOpenAIMessagesToGemini(abortedHistory, "gemini-3.8-flash")
+	// Turn 0: user "list files"
+	// Turn 1: model functionCall "search_files"
+	// Turn 2: user merged functionResponse for "search_files" + text "Nevermind, do something else"
+	if len(abortedContents) != 3 {
+		t.Fatalf("expected 3 turns, got %d", len(abortedContents))
+	}
+	if abortedContents[1]["role"] != "model" {
+		t.Errorf("expected model turn, got %v", abortedContents[1]["role"])
+	}
+	if abortedContents[2]["role"] != "user" {
+		t.Errorf("expected user turn, got %v", abortedContents[2]["role"])
+	}
+	abortedUserParts := abortedContents[2]["parts"].([]map[string]any)
+	var foundFR bool
+	for _, p := range abortedUserParts {
+		if fr, ok := p["functionResponse"].(map[string]any); ok {
+			foundFR = true
+			if fr["name"] != "search_files" {
+				t.Errorf("expected functionResponse name 'search_files', got %v", fr["name"])
+			}
+			if fr["id"] != "search_files-1711111111111-0" {
+				t.Errorf("expected functionResponse id 'search_files-1711111111111-0', got %v", fr["id"])
+			}
+		}
+	}
+	if !foundFR {
+		t.Errorf("expected functionResponse synthesized for aborted tool call")
+	}
+
+	// Verify partial tool abort: 2 tool calls, only 1 answered before abort
+	partialHistory := []any{
+		map[string]any{"role": "user", "content": "run two tools"},
+		map[string]any{
+			"role":    "assistant",
+			"content": nil,
+			"tool_calls": []any{
+				map[string]any{
+					"id":   "call_1",
+					"type": "function",
+					"function": map[string]any{"name": "fn_one", "arguments": `{}`},
+				},
+				map[string]any{
+					"id":   "call_2",
+					"type": "function",
+					"function": map[string]any{"name": "fn_two", "arguments": `{}`},
+				},
+			},
+		},
+		map[string]any{
+			"role":         "tool",
+			"tool_call_id": "call_1",
+			"content":      "done 1",
+		},
+		map[string]any{
+			"role":    "user",
+			"content": "Stop here",
+		},
+	}
+	partialContents, _ := convertOpenAIMessagesToGemini(partialHistory, "gemini-3.8-flash")
+	if len(partialContents) != 3 {
+		t.Fatalf("expected 3 turns for partial abort, got %d", len(partialContents))
+	}
+	partialUserParts := partialContents[2]["parts"].([]map[string]any)
+	frCount := 0
+	for _, p := range partialUserParts {
+		if _, ok := p["functionResponse"].(map[string]any); ok {
+			frCount++
+		}
+	}
+	if frCount != 2 {
+		t.Errorf("expected 2 functionResponses (1 real, 1 synthesized for aborted call), got %d", frCount)
+	}
 }
