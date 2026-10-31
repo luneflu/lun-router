@@ -1178,7 +1178,18 @@ func (c *Client) executeChatWithAccount(ctx context.Context, acc *Account, body 
 	// quota, so parking the account here banned whole model families and made
 	// every account look exhausted at once. Real exhaustion is read from the
 	// quota cache by isExhaustedLocked: remainingPercentage 0 with a future resetAt.
-	return c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		log.Printf("[antigravity] %s request error: %v | payload: %s", cleanModel, err, string(payloadBytes))
+		return nil, err
+	}
+	if resp != nil && resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		log.Printf("[antigravity] %s HTTP %d: %s | payload: %s", cleanModel, resp.StatusCode, string(respBody), string(payloadBytes))
+	}
+	return resp, nil
 }
 
 func convertOpenAIMessagesToGemini(messages any, model string) ([]map[string]any, map[string]any) {
@@ -1277,6 +1288,7 @@ func convertOpenAIMessagesToGemini(messages any, model string) ([]map[string]any
 			parts = append(parts, contentParts...)
 
 			var toolCallIDs []string
+			callIDToName := make(map[string]string)
 			if toolCalls, ok := m["tool_calls"].([]any); ok && len(toolCalls) > 0 {
 				firstCall := true
 				for idx, tc := range toolCalls {
@@ -1294,8 +1306,9 @@ func convertOpenAIMessagesToGemini(messages any, model string) ([]map[string]any
 						if callID == "" {
 							callID = fmt.Sprintf("%s-%d-%d", fnName, time.Now().UnixMilli(), idx)
 						}
+						cleanFnName := sanitizeGeminiFunctionName(fnName)
 						fc := map[string]any{
-							"name": sanitizeGeminiFunctionName(fnName),
+							"name": cleanFnName,
 							"args": args,
 						}
 						fc["id"] = callID
@@ -1310,6 +1323,7 @@ func convertOpenAIMessagesToGemini(messages any, model string) ([]map[string]any
 						}
 						parts = append(parts, callPart)
 						toolCallIDs = append(toolCallIDs, callID)
+						callIDToName[callID] = cleanFnName
 					}
 				}
 			}
@@ -1321,29 +1335,49 @@ func convertOpenAIMessagesToGemini(messages any, model string) ([]map[string]any
 				})
 			}
 
-			// Pair tool responses immediately with assistant tool_calls (matches 9router).
+			// Pair tool responses immediately with assistant tool_calls.
+			// Collect following tool responses first to avoid ID collision across distant turns.
+			responsesForThisTurn := make(map[string]any)
+			for j := i + 1; j < len(msgList); j++ {
+				nextRole, _ := msgList[j]["role"].(string)
+				if nextRole != "tool" {
+					break
+				}
+				if tid, ok := msgList[j]["tool_call_id"].(string); ok && tid != "" {
+					responsesForThisTurn[tid] = msgList[j]["content"]
+				}
+			}
+
 			// If intermediate (e.g. aborted before tool responded, followed by user prompt),
 			// synthesize empty responses so Gemini's functionCall -> functionResponse invariant holds.
 			if len(toolCallIDs) > 0 {
 				isIntermediate := i < len(msgList)-1
-				hasActualResponses := false
-				for _, fid := range toolCallIDs {
-					if _, ok := toolResponses[fid]; ok {
-						hasActualResponses = true
-						break
+				hasActualResponses := len(responsesForThisTurn) > 0
+				if !hasActualResponses {
+					for _, fid := range toolCallIDs {
+						if _, ok := toolResponses[fid]; ok {
+							hasActualResponses = true
+							break
+						}
 					}
 				}
 
 				if hasActualResponses || isIntermediate {
 					var toolParts []map[string]any
 					for _, fid := range toolCallIDs {
-						resp, hasResp := toolResponses[fid]
+						resp, hasResp := responsesForThisTurn[fid]
+						if !hasResp {
+							resp, hasResp = toolResponses[fid]
+						}
 						respContent := ""
 						if hasResp {
 							respContent = extractText(resp)
 						}
 
-						name := tcID2Name[fid]
+						name := callIDToName[fid]
+						if name == "" {
+							name = tcID2Name[fid]
+						}
 						if name == "" {
 							idParts := strings.Split(fid, "-")
 							if len(idParts) > 2 {

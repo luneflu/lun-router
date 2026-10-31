@@ -347,4 +347,66 @@ func TestConvertOpenAIMessagesToGeminiMultiTurn(t *testing.T) {
 	if frCount != 2 {
 		t.Errorf("expected 2 functionResponses (1 real, 1 synthesized for aborted call), got %d", frCount)
 	}
+
+	// Verify ID collision across turns: call_5494 used for grep at turn A, and bash at turn B.
+	// Earlier turn must retain name 'grep', not overwritten by 'bash'.
+	collisionHistory := []any{
+		map[string]any{"role": "user", "content": "find something"},
+		map[string]any{
+			"role":    "assistant",
+			"content": nil,
+			"tool_calls": []any{
+				map[string]any{
+					"id":   "call_5494",
+					"type": "function",
+					"function": map[string]any{"name": "grep", "arguments": `{}`},
+				},
+			},
+		},
+		map[string]any{
+			"role":         "tool",
+			"tool_call_id": "call_5494",
+			"content":      "grep output",
+		},
+		map[string]any{"role": "user", "content": "now run shell"},
+		map[string]any{
+			"role":    "assistant",
+			"content": nil,
+			"tool_calls": []any{
+				map[string]any{
+					"id":   "call_5494",
+					"type": "function",
+					"function": map[string]any{"name": "bash", "arguments": `{}`},
+				},
+			},
+		},
+		map[string]any{
+			"role":         "tool",
+			"tool_call_id": "call_5494",
+			"content":      "bash output",
+		},
+		map[string]any{"role": "user", "content": "next"},
+	}
+	collisionContents, _ := convertOpenAIMessagesToGemini(collisionHistory, "gemini-3.8-flash")
+	// Turn 0: user "find something"
+	// Turn 1: model fc grep
+	// Turn 2: user fr grep
+	// Turn 3: user "now run shell" -> merged with Turn 2? user role merged: parts: [fr grep, text "now run shell"]
+	// Turn 4: model fc bash
+	// Turn 5: user fr bash + text "next"
+	for idx, c := range collisionContents {
+		for _, p := range c["parts"].([]map[string]any) {
+			if fr, ok := p["functionResponse"].(map[string]any); ok {
+				if fr["id"] == "call_5494" {
+					respMap := fr["response"].(map[string]any)
+					if respMap["result"] == "grep output" && fr["name"] != "grep" {
+						t.Errorf("turn %d: expected fr name 'grep' for grep output, got %v", idx, fr["name"])
+					}
+					if respMap["result"] == "bash output" && fr["name"] != "bash" {
+						t.Errorf("turn %d: expected fr name 'bash' for bash output, got %v", idx, fr["name"])
+					}
+				}
+			}
+		}
+	}
 }
