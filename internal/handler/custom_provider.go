@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -246,6 +247,29 @@ func (h *CustomProviderHandler) SyncModels(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// refreshStaleCustomProviderModels re-syncs a provider whose saved models predate
+// metadata capture, so dashboard and /v1/models expose thinking levels right away.
+// Failures are ignored: the caller keeps the existing catalog.
+func refreshStaleCustomProviderModels(ctx context.Context, st *customprovider.Store, cl *customprovider.Client, p customprovider.Provider) customprovider.Provider {
+	if st == nil || cl == nil || !p.NeedsModelsRefresh() {
+		return p
+	}
+	if !st.MarkRefreshAttempt(p.ID) {
+		return p
+	}
+	models, err := cl.FetchModels(ctx, p)
+	if err != nil || len(models) == 0 {
+		return p
+	}
+	if err := st.SetModels(p.ID, models); err != nil {
+		return p
+	}
+	if fresh, ok := st.Get(p.ID); ok {
+		return fresh
+	}
+	return p
+}
+
 // customProviderModelItem builds the catalog entry for a model discovered from a
 // custom provider's /v1/models, keeping the saved Pi metadata (name, limits,
 // vision input, reasoning) instead of guessing from provider patterns.
@@ -296,6 +320,7 @@ func (h *CustomProviderHandler) ListModels(w http.ResponseWriter, r *http.Reques
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Provider not found"})
 		return
 	}
+	p = refreshStaleCustomProviderModels(r.Context(), h.store, h.client, p)
 
 	prefix := p.Prefix + "/"
 	var models []ModelItem

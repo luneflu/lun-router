@@ -557,6 +557,47 @@ func TestFindByModel_ReturnsAllMatches(t *testing.T) {
 	}
 }
 
+func TestNeedsModelsRefresh(t *testing.T) {
+	legacy := `{"id":"cp_1","prefix":"legacy","models":["llama-3.3-70b"]}`
+	var p Provider
+	if err := json.Unmarshal([]byte(legacy), &p); err != nil {
+		t.Fatal(err)
+	}
+	if !p.NeedsModelsRefresh() {
+		t.Errorf("provider saved before metadata capture must need a refresh")
+	}
+
+	if err := json.Unmarshal([]byte(`{"id":"cp_2","models":[]}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.NeedsModelsRefresh() {
+		t.Errorf("empty catalog must not need a refresh")
+	}
+}
+
+func TestMarkRefreshAttempt(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "customprov-refresh-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+
+	if !store.MarkRefreshAttempt("cp_x") {
+		t.Fatalf("first attempt must be allowed")
+	}
+	if store.MarkRefreshAttempt("cp_x") {
+		t.Fatalf("second attempt inside the window must be throttled")
+	}
+	if !store.MarkRefreshAttempt("cp_y") {
+		t.Fatalf("other providers must not be throttled")
+	}
+}
+
 func TestModelUnmarshalJSON_Compatibility(t *testing.T) { // String array (legacy format)
 	legacyJSON := `["llama-3.3-70b", "deepseek-r1"]`
 	var legacyModels []Model

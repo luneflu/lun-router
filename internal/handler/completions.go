@@ -290,6 +290,7 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 			if !cp.IsEnabled {
 				continue
 			}
+			cp = refreshStaleCustomProviderModels(r.Context(), h.customStore, h.customClient, cp)
 			prefix := cp.Prefix + "/"
 			seenModels := make(map[string]bool)
 			for _, m := range cp.Models {

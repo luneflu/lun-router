@@ -33,6 +33,8 @@ type Store struct {
 	mu       sync.RWMutex
 	filePath string
 	items    map[string]Provider // keyed by ID
+	// lastRefresh throttles automatic metadata refreshes per provider ID.
+	lastRefresh map[string]time.Time
 }
 
 func NewStore(dataDir string) (*Store, error) {
@@ -42,8 +44,9 @@ func NewStore(dataDir string) (*Store, error) {
 
 	fp := filepath.Join(dataDir, "custom_providers.json")
 	s := &Store{
-		filePath: fp,
-		items:    make(map[string]Provider),
+		filePath:    fp,
+		items:       make(map[string]Provider),
+		lastRefresh: make(map[string]time.Time),
 	}
 
 	if err := s.load(); err != nil && !os.IsNotExist(err) {
@@ -304,6 +307,21 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 	return err
 }
 
+// MarkRefreshAttempt returns true when an automatic refresh may run for this
+// provider, then records the attempt so failures are retried at most once per window.
+func (s *Store) MarkRefreshAttempt(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastRefresh == nil {
+		s.lastRefresh = make(map[string]time.Time)
+	}
+	if last, ok := s.lastRefresh[id]; ok && time.Since(last) < 10*time.Minute {
+		return false
+	}
+	s.lastRefresh[id] = time.Now()
+	return true
+}
+
 // SetModels updates models list for a provider.
 func (s *Store) SetModels(id string, models []Model) error {
 	_, err := s.Update(id, func(p *Provider) error {
@@ -320,6 +338,7 @@ func (s *Store) SetModels(id string, models []Model) error {
 			return unique[i].ID < unique[j].ID
 		})
 		p.Models = unique
+		p.ModelsSyncedAt = time.Now()
 		return nil
 	})
 	return err

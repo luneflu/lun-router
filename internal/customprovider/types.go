@@ -51,16 +51,23 @@ func (pc *ProviderCompat) UnmarshalJSON(data []byte) error {
 
 // Provider represents a user-configured OpenAI-compatible provider.
 type Provider struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Prefix    string          `json:"prefix"`
-	BaseURL   string          `json:"baseUrl"`
-	APIKey    string          `json:"apiKey,omitempty"`
-	Compat    *ProviderCompat `json:"compat,omitempty"`
-	Models    []Model         `json:"models"`
-	IsEnabled bool            `json:"isEnabled"`
-	CreatedAt time.Time       `json:"createdAt"`
-	UpdatedAt time.Time       `json:"updatedAt"`
+	ID             string          `json:"id"`
+	Name           string          `json:"name"`
+	Prefix         string          `json:"prefix"`
+	BaseURL        string          `json:"baseUrl"`
+	APIKey         string          `json:"apiKey,omitempty"`
+	Compat         *ProviderCompat `json:"compat,omitempty"`
+	Models         []Model         `json:"models"`
+	ModelsSyncedAt time.Time       `json:"modelsSyncedAt,omitempty"`
+	IsEnabled      bool            `json:"isEnabled"`
+	CreatedAt      time.Time       `json:"createdAt"`
+	UpdatedAt      time.Time       `json:"updatedAt"`
+}
+
+// NeedsModelsRefresh reports whether the catalog predates metadata capture, so
+// name/contextWindow/maxTokens/input/reasoning must be pulled again upstream.
+func (p *Provider) NeedsModelsRefresh() bool {
+	return len(p.Models) > 0 && p.ModelsSyncedAt.IsZero()
 }
 
 // ProviderSummary is a public representation of Provider with masked APIKey.

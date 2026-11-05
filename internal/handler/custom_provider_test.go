@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"lun-router/internal/customprovider"
 	"lun-router/internal/store"
@@ -347,5 +348,63 @@ func TestCustomProviderAPI_Lifecycle(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Delete status: %d", rec.Code)
+	}
+}
+
+func TestCustomProviderStaleModelsAutoRefresh(t *testing.T) {
+	cpStore, _, _, upstream, router := setupTestCustomProviderEnvironment(t)
+
+	// Simulate a provider saved before metadata capture: bare model IDs only.
+	p, err := cpStore.Add(customprovider.Provider{
+		Name:      "Legacy Groq",
+		Prefix:    "legacygroq",
+		BaseURL:   upstream.URL + "/v1",
+		APIKey:    "test-secret",
+		IsEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if _, err := cpStore.Update(p.ID, func(pp *customprovider.Provider) error {
+		pp.Models = []customprovider.Model{{ID: "llama-3.3-70b"}, {ID: "deepseek-v3"}}
+		pp.ModelsSyncedAt = time.Time{}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed legacy models failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/providers/custom/%s/models", p.ID), nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ListModels status: %d, body: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Models []ModelItem `json:"models"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+
+	var deepSeek *ModelItem
+	for i := range resp.Models {
+		if resp.Models[i].ID == "legacygroq/deepseek-v3" {
+			deepSeek = &resp.Models[i]
+		}
+	}
+	if deepSeek == nil {
+		t.Fatalf("deepseek-v3 missing after auto refresh: %+v", resp.Models)
+	}
+	if deepSeek.Name != "DeepSeek V3" {
+		t.Errorf("name: got %q, want DeepSeek V3", deepSeek.Name)
+	}
+	if len(deepSeek.ThinkingLevels) == 0 {
+		t.Errorf("thinking_levels empty after auto refresh: %+v", deepSeek)
+	}
+
+	// Metadata must be persisted, so the next read needs no upstream call.
+	stored, _ := cpStore.Get(p.ID)
+	if stored.NeedsModelsRefresh() {
+		t.Errorf("catalog still marked stale after refresh")
 	}
 }
