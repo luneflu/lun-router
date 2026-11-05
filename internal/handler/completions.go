@@ -296,7 +296,9 @@ func (h *CompletionHandler) Models(w http.ResponseWriter, r *http.Request) {
 			for _, m := range cp.Models {
 				seenModels[m.ID] = true
 				if h.modelStore == nil || !h.modelStore.IsDisabled(cp.Prefix, m.ID) {
-					filtered = append(filtered, customProviderModelItem(cp.Prefix, m, true))
+					item := customProviderModelItem(cp.Prefix, m, true)
+					item.Created = cp.CreatedAt.Unix()
+					filtered = append(filtered, item)
 				}
 			}
 			if h.modelStore != nil {

@@ -7,12 +7,13 @@ import (
 
 // Model represents model metadata saved from /v1/models (matching Pi model format).
 type Model struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name,omitempty"`
-	ContextWindow int      `json:"contextWindow,omitempty"`
-	MaxTokens     int      `json:"maxTokens,omitempty"`
-	Input         []string `json:"input,omitempty"`
-	Reasoning     *bool    `json:"reasoning,omitempty"`
+	ID             string   `json:"id"`
+	Name           string   `json:"name,omitempty"`
+	ContextWindow  int      `json:"contextWindow,omitempty"`
+	MaxTokens      int      `json:"maxTokens,omitempty"`
+	Input          []string `json:"input,omitempty"`
+	Reasoning      *bool    `json:"reasoning,omitempty"`
+	ThinkingLevels []string `json:"thinkingLevels,omitempty"`
 }
 
 func (m *Model) UnmarshalJSON(data []byte) error {

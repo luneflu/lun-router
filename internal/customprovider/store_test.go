@@ -557,6 +557,94 @@ func TestFindByModel_ReturnsAllMatches(t *testing.T) {
 	}
 }
 
+func TestParseModelFromMap_DeepSeekEffort(t *testing.T) {
+	// Shape returned by https://api.deepseek.com/v1/models
+	raw := map[string]any{
+		"id":                "deepseek-flash",
+		"name":              "DeepSeek-V4.1-Flash",
+		"context_window":    float64(1048576),
+		"max_output_tokens": float64(393216),
+		"input_modalities":  []any{"text", "image"},
+		"output_modalities": []any{"text"},
+		"effort":            map[string]any{"supported_levels": []any{"low", "high", "max"}, "default_level": "high"},
+		"api_capabilities":  map[string]any{"anthropic_messages": map[string]any{}},
+	}
+	m, ok := ParseModelFromMap(raw, nil)
+	if !ok {
+		t.Fatal("model not parsed")
+	}
+	if m.ContextWindow != 1048576 || m.MaxTokens != 393216 {
+		t.Errorf("limits: ctx=%d max=%d", m.ContextWindow, m.MaxTokens)
+	}
+	if m.Reasoning == nil || !*m.Reasoning {
+		t.Errorf("effort.supported_levels must imply reasoning")
+	}
+	if len(m.ThinkingLevels) != 3 || m.ThinkingLevels[0] != "low" || m.ThinkingLevels[2] != "max" {
+		t.Errorf("thinking levels: %v", m.ThinkingLevels)
+	}
+	hasImage := false
+	for _, in := range m.Input {
+		if in == "image" {
+			hasImage = true
+		}
+	}
+	if !hasImage {
+		t.Errorf("input_modalities image not mapped: %v", m.Input)
+	}
+
+	// Text-only modality list keeps vision off.
+	pro, _ := ParseModelFromMap(map[string]any{
+		"id":               "deepseek-v4-pro",
+		"input_modalities": []any{"text"},
+		"effort":           map[string]any{"supported_levels": []any{"high"}},
+	}, nil)
+	for _, in := range pro.Input {
+		if in == "image" {
+			t.Errorf("pro must stay text-only: %v", pro.Input)
+		}
+	}
+}
+
+func TestParseModelFromMap_OtherGatewayShapes(t *testing.T) {
+	// OpenRouter: context_length + architecture.input_modalities + supported_parameters +
+	// top_provider.max_completion_tokens.
+	m, ok := ParseModelFromMap(map[string]any{
+		"id":                   "anthropic/claude-sonnet-4.5",
+		"name":                 "Claude Sonnet 4.5",
+		"context_length":       float64(200000),
+		"architecture":         map[string]any{"input_modalities": []any{"text", "image"}},
+		"supported_parameters": []any{"tools", "reasoning"},
+		"top_provider":         map[string]any{"max_completion_tokens": float64(64000)},
+	}, nil)
+	if !ok {
+		t.Fatal("model not parsed")
+	}
+	if m.ContextWindow != 200000 || m.MaxTokens != 64000 {
+		t.Errorf("limits: ctx=%d max=%d", m.ContextWindow, m.MaxTokens)
+	}
+	if m.Reasoning == nil || !*m.Reasoning {
+		t.Errorf("supported_parameters reasoning not detected")
+	}
+	hasImage := false
+	for _, in := range m.Input {
+		if in == "image" {
+			hasImage = true
+		}
+	}
+	if !hasImage {
+		t.Errorf("architecture.input_modalities image not mapped: %v", m.Input)
+	}
+
+	// No reasoning parameter -> reasoning stays unset (pattern fallback decides).
+	plain, _ := ParseModelFromMap(map[string]any{
+		"id":                   "meta-llama/llama-3.1-8b",
+		"supported_parameters": []any{"tools", "temperature"},
+	}, nil)
+	if plain.Reasoning != nil {
+		t.Errorf("expected nil reasoning, got %v", *plain.Reasoning)
+	}
+}
+
 func TestNeedsModelsRefresh(t *testing.T) {
 	legacy := `{"id":"cp_1","prefix":"legacy","models":["llama-3.3-70b"]}`
 	var p Provider

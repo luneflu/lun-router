@@ -228,6 +228,11 @@ func ParseModelFromMap(raw map[string]any, compat *ProviderCompat) (Model, bool)
 
 	cw := extractPositiveInt(raw, "context_window", "contextWindow", "max_model_len", "context_length", "max_context_length", "max_input_tokens")
 	mt := extractPositiveInt(raw, "max_tokens", "maxTokens", "max_output_tokens", "max_completion_tokens")
+	if mt == 0 {
+		if tp, ok := raw["top_provider"].(map[string]any); ok {
+			mt = extractPositiveInt(tp, "max_completion_tokens", "max_tokens", "context_length")
+		}
+	}
 
 	var caps map[string]any
 	if c, ok := raw["capabilities"].(map[string]any); ok {
@@ -279,6 +284,20 @@ func ParseModelFromMap(raw map[string]any, compat *ProviderCompat) (Model, bool)
 			imageSupported = v
 		}
 	}
+	// Vendor modality lists: DeepSeek "input_modalities", OpenRouter
+	// "architecture.input_modalities".
+	if imageSupported == nil {
+		if v := modalityImageSupported(raw["input_modalities"]); v != nil {
+			imageSupported = v
+		}
+	}
+	if imageSupported == nil {
+		if arch, ok := raw["architecture"].(map[string]any); ok {
+			if v := modalityImageSupported(arch["input_modalities"]); v != nil {
+				imageSupported = v
+			}
+		}
+	}
 
 	input := []string{"text"}
 	if imageSupported != nil && *imageSupported {
@@ -298,14 +317,88 @@ func ParseModelFromMap(raw map[string]any, compat *ProviderCompat) (Model, bool)
 		}
 	}
 
+	// DeepSeek-style effort declaration:
+	// "effort": {"supported_levels": ["low","high","max"], "default_level": "high"}
+	thinkingLevels := stringSlice(raw["supported_levels"])
+	if effort, ok := raw["effort"].(map[string]any); ok {
+		if levels := stringSlice(effort["supported_levels"]); len(levels) > 0 {
+			thinkingLevels = levels
+		}
+	}
+	if len(thinkingLevels) > 0 && reasoning == nil {
+		on := true
+		reasoning = &on
+	}
+	// OpenRouter advertises reasoning through "supported_parameters".
+	if reasoning == nil {
+		if params := stringSlice(raw["supported_parameters"]); len(params) > 0 {
+			for _, p := range params {
+				if p == "reasoning" || p == "reasoning_effort" || p == "include_reasoning" {
+					on := true
+					reasoning = &on
+					break
+				}
+			}
+		}
+	}
+
 	return Model{
-		ID:            id,
-		Name:          name,
-		ContextWindow: cw,
-		MaxTokens:     mt,
-		Input:         input,
-		Reasoning:     reasoning,
+		ID:             id,
+		Name:           name,
+		ContextWindow:  cw,
+		MaxTokens:      mt,
+		Input:          input,
+		Reasoning:      reasoning,
+		ThinkingLevels: thinkingLevels,
 	}, true
+}
+
+// stringSlice normalizes a JSON string array, lowercasing and dropping blanks.
+func stringSlice(value any) []string {
+	slice, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, item := range slice {
+		s, ok := item.(string)
+		if !ok {
+			continue
+		}
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// modalityImageSupported reports image input from a modality list such as
+// ["text", "image"].
+func modalityImageSupported(value any) *bool {
+	slice, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	hasModality := false
+	hasImage := false
+	for _, item := range slice {
+		s, ok := item.(string)
+		if !ok {
+			continue
+		}
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "text" || s == "image" {
+			hasModality = true
+		}
+		if s == "image" {
+			hasImage = true
+		}
+	}
+	if !hasModality {
+		return nil
+	}
+	return &hasImage
 }
 
 // ExecuteChat sends chat completion request to the custom provider's /chat/completions endpoint.

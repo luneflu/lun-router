@@ -21,6 +21,7 @@ type ModelCapabilities struct {
 type ModelItem struct {
 	ID                  string             `json:"id"`
 	Name                string             `json:"name,omitempty"`
+	Created             int64              `json:"created"`
 	Object              string             `json:"object"`
 	OwnedBy             string             `json:"owned_by"`
 	Enabled             bool               `json:"enabled"`
@@ -630,6 +631,30 @@ func ResolveCapabilities(provider, modelID string) ModelCapabilities {
 	return ModelCapabilities{
 		Tools:              true,
 		Reasoning:          false,
+		ThinkingCanDisable: true,
+		ContextWindow:      200000,
+		MaxOutput:          64000,
+	}
+}
+
+// ResolveCapabilitiesFromPattern resolves capabilities from model ID patterns only.
+// Used for providers outside knownProviders (custom OpenAI-compatible endpoints)
+// whose model list advertises no capability metadata.
+func ResolveCapabilitiesFromPattern(modelID string) ModelCapabilities {
+	baseID := strings.TrimSpace(modelID)
+	if idx := strings.LastIndex(baseID, "/"); idx != -1 {
+		baseID = strings.TrimSpace(baseID[idx+1:])
+	}
+	if idx := strings.LastIndex(baseID, "("); idx != -1 && strings.HasSuffix(baseID, ")") {
+		baseID = strings.TrimSpace(baseID[:idx])
+	}
+	for _, rule := range patternRules {
+		if matchesPattern(rule.pattern, baseID) {
+			return rule.caps
+		}
+	}
+	return ModelCapabilities{
+		Tools:              true,
 		ThinkingCanDisable: true,
 		ContextWindow:      200000,
 		MaxOutput:          64000,

@@ -408,3 +408,58 @@ func TestCustomProviderStaleModelsAutoRefresh(t *testing.T) {
 		t.Errorf("catalog still marked stale after refresh")
 	}
 }
+
+func TestCustomProviderModelItem_UsesPatternFallback(t *testing.T) {
+	// Upstream advertises nothing: deepseek must still surface thinking levels.
+	item := customProviderModelItem("nvidia", customprovider.Model{
+		ID:    "deepseek/deepseek-flash",
+		Name:  "DeepSeek-V4.1-Flash",
+		Input: []string{"text"},
+	}, true)
+	if item.Capabilities == nil || !item.Capabilities.Reasoning {
+		t.Fatalf("deepseek pattern fallback lost reasoning: %+v", item.Capabilities)
+	}
+	if len(item.ThinkingLevels) == 0 {
+		t.Errorf("deepseek pattern fallback lost thinking_levels")
+	}
+
+	// Unknown family keeps reasoning off and exposes no thinking levels.
+	other := customProviderModelItem("nvidia", customprovider.Model{
+		ID:    "poolside/laguna-xs-2.1",
+		Name:  "poolside/laguna-xs-2.1",
+		Input: []string{"text"},
+	}, true)
+	if other.Capabilities == nil || other.Capabilities.Reasoning {
+		t.Errorf("unexpected reasoning for unknown model: %+v", other.Capabilities)
+	}
+	if len(other.ThinkingLevels) != 0 {
+		t.Errorf("unexpected thinking levels for unknown model: %v", other.ThinkingLevels)
+	}
+
+	// Explicit upstream false overrides the pattern.
+	off := false
+	explicit := customProviderModelItem("nvidia", customprovider.Model{
+		ID:        "deepseek/deepseek-flash",
+		Name:      "DeepSeek-V4.1-Flash",
+		Input:     []string{"text"},
+		Reasoning: &off,
+	}, true)
+	if explicit.Capabilities == nil || explicit.Capabilities.Reasoning {
+		t.Errorf("explicit reasoning=false must win: %+v", explicit.Capabilities)
+	}
+	if len(explicit.ThinkingLevels) != 0 {
+		t.Errorf("explicit reasoning=false must drop thinking levels: %v", explicit.ThinkingLevels)
+	}
+
+	// Stored limits win over pattern defaults.
+	limits := customProviderModelItem("nvidia", customprovider.Model{
+		ID:            "deepseek/deepseek-flash",
+		Name:          "DeepSeek-V4.1-Flash",
+		Input:         []string{"text"},
+		ContextWindow: 1048576,
+		MaxTokens:     393216,
+	}, true)
+	if limits.ContextLength != 1048576 || limits.MaxCompletionTokens != 393216 {
+		t.Errorf("stored limits lost: ctx=%d max=%d", limits.ContextLength, limits.MaxCompletionTokens)
+	}
+}

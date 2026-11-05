@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 
 	"lun-router/internal/customprovider"
@@ -274,13 +275,22 @@ func refreshStaleCustomProviderModels(ctx context.Context, st *customprovider.St
 // custom provider's /v1/models, keeping the saved Pi metadata (name, limits,
 // vision input, reasoning) instead of guessing from provider patterns.
 func customProviderModelItem(prefix string, m customprovider.Model, enabled bool) ModelItem {
-	caps := model.ModelCapabilities{
-		Tools:         true,
-		ContextWindow: m.ContextWindow,
-		MaxOutput:     m.MaxTokens,
+	// Upstream model lists rarely advertise capabilities, so start from the known
+	// model-ID patterns and let explicit upstream values override them.
+	caps := model.ResolveCapabilitiesFromPattern(m.ID)
+	caps.Tools = true
+	if m.ContextWindow > 0 {
+		caps.ContextWindow = m.ContextWindow
+	}
+	if m.MaxTokens > 0 {
+		caps.MaxOutput = m.MaxTokens
 	}
 	if m.Reasoning != nil {
 		caps.Reasoning = *m.Reasoning
+		if !caps.Reasoning {
+			caps.ThinkingLevels = nil
+			caps.ThinkingFormat = ""
+		}
 	}
 	for _, inp := range m.Input {
 		if inp == "image" {
@@ -288,10 +298,14 @@ func customProviderModelItem(prefix string, m customprovider.Model, enabled bool
 			break
 		}
 	}
-	if caps.Reasoning {
+	if caps.Reasoning && len(caps.ThinkingLevels) == 0 {
 		caps.ThinkingFormat = "openai"
 		caps.ThinkingCanDisable = true
 		caps.ThinkingLevels = model.LevelsOpenAI
+	}
+	if m.Reasoning != nil && *m.Reasoning && len(m.ThinkingLevels) > 0 {
+		caps.ThinkingLevels = m.ThinkingLevels
+		caps.ThinkingCanDisable = slices.Contains(m.ThinkingLevels, "none")
 	}
 
 	item := ModelItem{
@@ -301,8 +315,8 @@ func customProviderModelItem(prefix string, m customprovider.Model, enabled bool
 		OwnedBy:             prefix,
 		Enabled:             enabled,
 		Capabilities:        &caps,
-		ContextLength:       m.ContextWindow,
-		MaxCompletionTokens: m.MaxTokens,
+		ContextLength:       caps.ContextWindow,
+		MaxCompletionTokens: caps.MaxOutput,
 	}
 	if len(caps.ThinkingLevels) > 0 {
 		item.ThinkingLevels = caps.ThinkingLevels
@@ -329,7 +343,9 @@ func (h *CustomProviderHandler) ListModels(w http.ResponseWriter, r *http.Reques
 	for _, m := range p.Models {
 		seen[m.ID] = true
 		enabled := h.modelStore == nil || !h.modelStore.IsDisabled(p.Prefix, m.ID)
-		models = append(models, customProviderModelItem(p.Prefix, m, enabled))
+		item := customProviderModelItem(p.Prefix, m, enabled)
+		item.Created = p.CreatedAt.Unix()
+		models = append(models, item)
 	}
 
 	if h.modelStore != nil {
