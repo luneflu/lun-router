@@ -1327,7 +1327,15 @@ func (h *CompletionHandler) pingSingleModel(ctx context.Context, model string, p
 	}
 
 	// Custom Provider Model Test
-	if cp, cleanModel, isCustom := h.findCustomProvider(provider, bareModel); isCustom {
+	cp, cleanModel, isCustom, cpErr := h.findCustomProvider(provider, bareModel)
+	if cpErr != nil {
+		return ModelTestResult{
+			OK:    false,
+			Model: model,
+			Error: cpErr.Error(),
+		}
+	}
+	if isCustom {
 		if !cp.IsEnabled {
 			return ModelTestResult{
 				OK:        false,
@@ -1668,21 +1676,33 @@ func splitProviderPrefixWithStore(model string, cpStore *customprovider.Store) (
 	}
 }
 
-func (h *CompletionHandler) findCustomProvider(providerPrefix, model string) (customprovider.Provider, string, bool) {
+func (h *CompletionHandler) findCustomProvider(providerPrefix, model string) (customprovider.Provider, string, bool, error) {
 	if h.customStore == nil {
-		return customprovider.Provider{}, "", false
+		return customprovider.Provider{}, "", false, nil
 	}
 	if providerPrefix != "" {
 		if cp, ok := h.customStore.GetByPrefix(providerPrefix); ok {
 			cleanModel := customprovider.CleanModelID(cp.Prefix, model)
-			return cp, cleanModel, true
+			return cp, cleanModel, true, nil
 		}
 	}
-	// Bare model fallback: see if any enabled custom provider has it
-	if cp, ok := h.customStore.FindByModel(model); ok {
-		return cp, model, true
+
+	// Bare model: resolve only when exactly one enabled provider claims it.
+	matches := h.customStore.FindByModel(model)
+	switch len(matches) {
+	case 0:
+		return customprovider.Provider{}, "", false, nil
+	case 1:
+		return matches[0], model, true, nil
+	default:
+		qualified := make([]string, len(matches))
+		for i, m := range matches {
+			qualified[i] = m.Prefix + "/" + model
+		}
+		return customprovider.Provider{}, "", false, fmt.Errorf(
+			"model %q is ambiguous across custom providers; use a prefixed ID: %s",
+			model, strings.Join(qualified, ", "))
 	}
-	return customprovider.Provider{}, "", false
 }
 
 func cleanOpenCodeID(model string) string {
@@ -2277,7 +2297,19 @@ func (h *CompletionHandler) ChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Check if this is a custom provider model
-	if cp, cleanModel, isCustom := h.findCustomProvider(modelProvider, model); isCustom {
+	cp, cleanModel, isCustom, cpErr := h.findCustomProvider(modelProvider, model)
+	if cpErr != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]string{
+				"message": cpErr.Error(),
+				"type":    "invalid_request_error",
+			},
+		})
+		return
+	}
+	if isCustom {
 		if !cp.IsEnabled {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)

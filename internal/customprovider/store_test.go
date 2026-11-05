@@ -112,8 +112,8 @@ func TestStoreCRUD(t *testing.T) {
 	}
 
 	// 8. FindByModel
-	foundByModel, ok := store.FindByModel("llama-3.3-70b")
-	if !ok || foundByModel.ID != p.ID {
+	foundByModel := store.FindByModel("llama-3.3-70b")
+	if len(foundByModel) != 1 || foundByModel[0].ID != p.ID {
 		t.Errorf("FindByModel failed")
 	}
 
@@ -509,8 +509,55 @@ func TestParseModelFromMap_PrecedenceAndFields(t *testing.T) {
 	})
 }
 
-func TestModelUnmarshalJSON_Compatibility(t *testing.T) {
-	// String array (legacy format)
+func TestFindByModel_ReturnsAllMatches(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "customprov-dup-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+
+	for _, prefix := range []string{"groq", "together"} {
+		p, addErr := store.Add(Provider{
+			Name:      prefix,
+			Prefix:    prefix,
+			BaseURL:   "https://example.com/v1",
+			IsEnabled: true,
+		})
+		if addErr != nil {
+			t.Fatalf("Add %s failed: %v", prefix, addErr)
+		}
+		if setErr := store.SetModelIDs(p.ID, []string{"llama-3.3-70b"}); setErr != nil {
+			t.Fatalf("SetModelIDs %s failed: %v", prefix, setErr)
+		}
+	}
+
+	matches := store.FindByModel("llama-3.3-70b")
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 ambiguous matches, got %d", len(matches))
+	}
+	if matches[0].Prefix != "groq" || matches[1].Prefix != "together" {
+		t.Errorf("expected sorted prefixes [groq together], got [%s %s]", matches[0].Prefix, matches[1].Prefix)
+	}
+
+	// Disabled providers must not claim the bare model.
+	if err := store.SetEnabled(matches[0].ID, false); err != nil {
+		t.Fatalf("SetEnabled failed: %v", err)
+	}
+	if remaining := store.FindByModel("llama-3.3-70b"); len(remaining) != 1 || remaining[0].Prefix != "together" {
+		t.Errorf("expected only 'together' after disabling 'groq', got %+v", remaining)
+	}
+
+	if none := store.FindByModel("nope"); len(none) != 0 {
+		t.Errorf("expected no matches, got %+v", none)
+	}
+}
+
+func TestModelUnmarshalJSON_Compatibility(t *testing.T) { // String array (legacy format)
 	legacyJSON := `["llama-3.3-70b", "deepseek-r1"]`
 	var legacyModels []Model
 	if err := json.Unmarshal([]byte(legacyJSON), &legacyModels); err != nil {

@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	prefixRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	prefixRegex      = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 	reservedPrefixes = map[string]bool{
 		"opencode":    true,
 		"antigravity": true,
@@ -165,23 +165,29 @@ func (s *Store) GetByPrefix(prefix string) (Provider, bool) {
 	return Provider{}, false
 }
 
-// FindByModel searches if any custom provider has this bare model in its catalog.
-func (s *Store) FindByModel(modelID string) (Provider, bool) {
+// FindByModel returns all enabled providers that have this bare model in their catalog.
+// More than one result means the bare ID is ambiguous and callers must use an explicit prefix.
+func (s *Store) FindByModel(modelID string) []Provider {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	clean := strings.TrimSpace(modelID)
+	var matches []Provider
 	for _, p := range s.items {
 		if !p.IsEnabled {
 			continue
 		}
 		for _, m := range p.Models {
 			if m.ID == clean {
-				return p, true
+				matches = append(matches, p)
+				break
 			}
 		}
 	}
-	return Provider{}, false
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].Prefix < matches[j].Prefix
+	})
+	return matches
 }
 
 // Add creates a new custom provider.
