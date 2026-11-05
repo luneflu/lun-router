@@ -54,7 +54,16 @@ func setupTestCustomProviderEnvironment(t *testing.T) (*customprovider.Store, *s
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"data": []map[string]any{
 					{"id": "llama-3.3-70b"},
-					{"id": "deepseek-v3"},
+					{
+						"id":             "deepseek-v3",
+						"name":           "DeepSeek V3",
+						"context_window": 65536,
+						"max_tokens":     8192,
+						"capabilities": map[string]any{
+							"reasoning": true,
+							"vision":    true,
+						},
+					},
 				},
 			})
 		case "/v1/chat/completions":
@@ -134,7 +143,7 @@ func TestCustomProviderAPI_Lifecycle(t *testing.T) {
 	}
 	var listResp struct {
 		Providers []customprovider.ProviderSummary `json:"providers"`
-		Count     int                             `json:"count"`
+		Count     int                              `json:"count"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&listResp); err != nil {
 		t.Fatal(err)
@@ -175,8 +184,8 @@ func TestCustomProviderAPI_Lifecycle(t *testing.T) {
 		t.Fatalf("Sync status: %d, body: %s", rec.Code, rec.Body.String())
 	}
 	var syncResp struct {
-		OK    bool     `json:"ok"`
-		Count int      `json:"count"`
+		OK     bool     `json:"ok"`
+		Count  int      `json:"count"`
 		Models []string `json:"models"`
 	}
 	_ = json.NewDecoder(rec.Body).Decode(&syncResp)
@@ -200,12 +209,34 @@ func TestCustomProviderAPI_Lifecycle(t *testing.T) {
 	if modelsResp.Count != 2 || modelsResp.Provider != "groq" {
 		t.Fatalf("unexpected ListModels: %+v", modelsResp)
 	}
+	// Discovered metadata must reach the dashboard payload, not just /v1/models.
+	var dashDeepSeek *ModelItem
+	for i := range modelsResp.Models {
+		if modelsResp.Models[i].ID == "groq/deepseek-v3" {
+			dashDeepSeek = &modelsResp.Models[i]
+		}
+	}
+	if dashDeepSeek == nil {
+		t.Fatalf("deepseek-v3 missing from dashboard models: %+v", modelsResp.Models)
+	}
+	if dashDeepSeek.Name != "DeepSeek V3" {
+		t.Errorf("dashboard name: got %q, want DeepSeek V3", dashDeepSeek.Name)
+	}
+	if dashDeepSeek.ContextLength != 65536 || dashDeepSeek.MaxCompletionTokens != 8192 {
+		t.Errorf("dashboard limits: got ctx=%d max=%d", dashDeepSeek.ContextLength, dashDeepSeek.MaxCompletionTokens)
+	}
+	if len(dashDeepSeek.ThinkingLevels) == 0 {
+		t.Errorf("dashboard thinking_levels empty for reasoning model")
+	}
+	if dashDeepSeek.Capabilities == nil || !dashDeepSeek.Capabilities.Reasoning || !dashDeepSeek.Capabilities.Vision {
+		t.Errorf("dashboard capabilities: %+v", dashDeepSeek.Capabilities)
+	}
 
 	// 5. Add Custom Model
 	customModelBody, _ := json.Marshal(map[string]any{
-		"id":            "custom-added",
+		"id":             "custom-added",
 		"context_length": 65536,
-		"tools":         true,
+		"tools":          true,
 	})
 	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/providers/custom/%s/models/custom", provID), bytes.NewReader(customModelBody))
 	rec = httptest.NewRecorder()
@@ -227,6 +258,7 @@ func TestCustomProviderAPI_Lifecycle(t *testing.T) {
 	_ = json.NewDecoder(rec.Body).Decode(&v1Models)
 	foundGroqLlama := false
 	foundGroqCustom := false
+	foundDeepSeekThinking := false
 	for _, m := range v1Models.Data {
 		if m.ID == "groq/llama-3.3-70b" {
 			foundGroqLlama = true
@@ -234,9 +266,15 @@ func TestCustomProviderAPI_Lifecycle(t *testing.T) {
 		if m.ID == "groq/custom-added" {
 			foundGroqCustom = true
 		}
+		if m.ID == "groq/deepseek-v3" && len(m.ThinkingLevels) > 0 {
+			foundDeepSeekThinking = true
+		}
 	}
 	if !foundGroqLlama || !foundGroqCustom {
 		t.Errorf("missing groq models in /v1/models. foundLlama=%v, foundCustom=%v", foundGroqLlama, foundGroqCustom)
+	}
+	if !foundDeepSeekThinking {
+		t.Errorf("/v1/models missing thinking_levels for groq/deepseek-v3")
 	}
 
 	// 7. Chat completions (non-stream)

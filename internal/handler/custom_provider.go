@@ -246,6 +246,46 @@ func (h *CustomProviderHandler) SyncModels(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// customProviderModelItem builds the catalog entry for a model discovered from a
+// custom provider's /v1/models, keeping the saved Pi metadata (name, limits,
+// vision input, reasoning) instead of guessing from provider patterns.
+func customProviderModelItem(prefix string, m customprovider.Model, enabled bool) ModelItem {
+	caps := model.ModelCapabilities{
+		Tools:         true,
+		ContextWindow: m.ContextWindow,
+		MaxOutput:     m.MaxTokens,
+	}
+	if m.Reasoning != nil {
+		caps.Reasoning = *m.Reasoning
+	}
+	for _, inp := range m.Input {
+		if inp == "image" {
+			caps.Vision = true
+			break
+		}
+	}
+	if caps.Reasoning {
+		caps.ThinkingFormat = "openai"
+		caps.ThinkingCanDisable = true
+		caps.ThinkingLevels = model.LevelsOpenAI
+	}
+
+	item := ModelItem{
+		ID:                  prefix + "/" + m.ID,
+		Name:                m.Name,
+		Object:              "model",
+		OwnedBy:             prefix,
+		Enabled:             enabled,
+		Capabilities:        &caps,
+		ContextLength:       m.ContextWindow,
+		MaxCompletionTokens: m.MaxTokens,
+	}
+	if len(caps.ThinkingLevels) > 0 {
+		item.ThinkingLevels = caps.ThinkingLevels
+	}
+	return item
+}
+
 // GET /api/providers/custom/{id}/models - List models for this custom provider
 func (h *CustomProviderHandler) ListModels(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -264,42 +304,7 @@ func (h *CustomProviderHandler) ListModels(w http.ResponseWriter, r *http.Reques
 	for _, m := range p.Models {
 		seen[m.ID] = true
 		enabled := h.modelStore == nil || !h.modelStore.IsDisabled(p.Prefix, m.ID)
-		item := ModelItem{
-			ID:      prefix + m.ID,
-			Name:    m.Name,
-			Object:  "model",
-			OwnedBy: p.Prefix,
-			Enabled: enabled,
-		}
-		model.EnrichModelItem(&item, p.Prefix)
-		if m.ContextWindow > 0 {
-			item.ContextLength = m.ContextWindow
-			if item.Capabilities != nil {
-				item.Capabilities.ContextWindow = m.ContextWindow
-			}
-		}
-		if m.MaxTokens > 0 {
-			item.MaxCompletionTokens = m.MaxTokens
-			if item.Capabilities != nil {
-				item.Capabilities.MaxOutput = m.MaxTokens
-			}
-		}
-		if m.Reasoning != nil {
-			if item.Capabilities == nil {
-				item.Capabilities = &model.ModelCapabilities{}
-			}
-			item.Capabilities.Reasoning = *m.Reasoning
-		}
-		for _, inp := range m.Input {
-			if inp == "image" {
-				if item.Capabilities == nil {
-					item.Capabilities = &model.ModelCapabilities{}
-				}
-				item.Capabilities.Vision = true
-				break
-			}
-		}
-		models = append(models, item)
+		models = append(models, customProviderModelItem(p.Prefix, m, enabled))
 	}
 
 	if h.modelStore != nil {
